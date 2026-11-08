@@ -1,5 +1,5 @@
-import { sb, state, $, $$, esc, money, fmtDT, fmtD, q, statusBadge, dueBadge, currentDue, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON, toast, promptBox } from "./lib.js";
-import { orderModal } from "./admin.js";
+import { sb, state, $, $$, esc, money, fmtDT, fmtD, q, statusBadge, dueBadge, currentDue, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON, toast, promptBox } from "./lib.js?v=4";
+import { orderModal } from "./admin.js?v=4";
 
 export async function tasks(el) {
   el.innerHTML = `

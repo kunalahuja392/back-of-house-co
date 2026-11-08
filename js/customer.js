@@ -1,4 +1,4 @@
-import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks } from "./lib.js";
+import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks } from "./lib.js?v=4";
 
 const CART_KEY = () => "boh_cart_" + state.me.restaurant_id;
 const loadCart = () => { try { return JSON.parse(localStorage.getItem(CART_KEY()) || "{}"); } catch { return {}; } };
