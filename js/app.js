@@ -1,8 +1,8 @@
-import { sb, state, $, $$, esc, toast, q, callUsersFn } from "./lib.js?v=4";
-import * as admin from "./admin.js?v=4";
-import * as reports from "./reports.js?v=4";
-import * as coord from "./coordinator.js?v=4";
-import * as cust from "./customer.js?v=4";
+import { sb, state, $, $$, esc, toast, q, modal } from "./lib.js?v=5";
+import * as admin from "./admin.js?v=5";
+import * as reports from "./reports.js?v=5";
+import * as coord from "./coordinator.js?v=5";
+import * as cust from "./customer.js?v=5";
 
 const root = document.getElementById("root");
 
@@ -66,14 +66,87 @@ function loginView(msg = "") {
         <div class="field"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div>
         <button class="btn primary" style="width:100%;justify-content:center">Sign in</button>
       </form>
+      <p class="small" style="margin-top:1rem;text-align:center"><a href="javascript:void 0" id="forgot">Forgot password?</a></p>
     </div></div>
   </div>`;
+  $("#forgot").onclick = () => forgotView($('[name="email"]').value);
   $("#lf").onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     const { error } = await sb.auth.signInWithPassword({ email: f.get("email"), password: f.get("password") });
     if (error) toast(error.message, true);
   };
+}
+
+// login-page layout with a custom right-hand panel
+function authShell(inner) {
+  root.innerHTML = `
+  <div class="login">
+    <div class="hero">
+      <div class="brand"><span class="logo">B</span> Back of House Co</div>
+      <div><h1>Everything your kitchen runs on, ordered in one place.</h1></div>
+      <div class="small" style="opacity:.6">Accounts are created by the Back of House Co team.</div>
+    </div>
+    <div class="form"><div>${inner}</div></div>
+  </div>`;
+}
+
+function forgotView(email = "") {
+  authShell(`
+    <h2>Reset your password</h2>
+    <p class="muted">Enter your login email. We'll email you a link to set a new password.</p>
+    <form id="ff">
+      <div class="field"><label>Email</label><input name="email" type="email" required value="${esc(email)}" autocomplete="username"></div>
+      <button class="btn primary" style="width:100%;justify-content:center">Send reset link</button>
+    </form>
+    <p class="small" style="margin-top:1rem;text-align:center"><a href="javascript:void 0" id="back">Back to sign in</a></p>`);
+  $("#back").onclick = () => loginView();
+  $("#ff").onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = $("button", e.target); btn.disabled = true;
+    const addr = new FormData(e.target).get("email");
+    const { error } = await sb.auth.resetPasswordForEmail(addr, { redirectTo: location.origin + location.pathname });
+    btn.disabled = false;
+    if (error) return toast(error.message, true);
+    authShell(`
+      <h2>Check your email</h2>
+      <p>If <b>${esc(addr)}</b> has a Back of House Co login, a reset link is on its way. Open it on this device to set a new password.</p>
+      <p class="small muted">Nothing arrived after a few minutes? Check spam, or ask your Back of House Co contact to reset it for you.</p>
+      <p class="small" style="margin-top:1rem"><a href="javascript:void 0" id="back">Back to sign in</a></p>`);
+    $("#back").onclick = () => loginView();
+  };
+}
+
+// shown after opening the email link (and from "Change password" when signed in)
+function newPasswordView({ signedIn = false } = {}) {
+  const m = `
+    <h2>${signedIn ? "Change password" : "Set a new password"}</h2>
+    <form id="np">
+      <div class="field"><label>New password (min 8 characters)</label><input name="p1" type="password" minlength="8" required autocomplete="new-password"></div>
+      <div class="field"><label>Repeat new password</label><input name="p2" type="password" minlength="8" required autocomplete="new-password"></div>
+      <button class="btn primary" style="width:100%;justify-content:center">Save password</button>
+    </form>`;
+  const done = async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    if (f.get("p1") !== f.get("p2")) return toast("Passwords don't match", true);
+    const { error } = await sb.auth.updateUser({ password: f.get("p1") });
+    if (error) return toast(error.message, true);
+    toast("Password updated");
+    if (signedIn) return modalRef?.close();
+    recovering = false;
+    history.replaceState(null, "", location.pathname);
+    const { data } = await sb.auth.getSession();
+    loadMe(data.session);
+  };
+  let modalRef = null;
+  if (signedIn) {
+    modalRef = modal({ title: "Change password", body: m.replace(/<h2>.*?<\/h2>/, "") });
+    $("#np", modalRef.el).onsubmit = done;
+  } else {
+    authShell(m);
+    $("#np").onsubmit = done;
+  }
 }
 
 // ---------------------------------------------------------------- shell
@@ -92,12 +165,13 @@ function shell() {
       <div class="who">
         <div style="color:#fff;font-weight:600">${esc(state.me.full_name)}</div>
         <div>${esc(state.me.role.replace("_", " "))}${state.me.restaurant ? " · " + esc(state.me.restaurant.name) : ""}</div>
-        <button class="btn sm" id="logout" style="margin-top:.6rem">Sign out</button>
+        <div class="row" style="margin-top:.6rem;gap:.4rem"><button class="btn sm" id="chpw">Change password</button><button class="btn sm" id="logout">Sign out</button></div>
       </div>
     </aside>
     <main class="main" id="view"></main>
   </div>`;
   $("#logout").onclick = () => sb.auth.signOut();
+  $("#chpw").onclick = () => newPasswordView({ signedIn: true });
   $("#burger").onclick = () => $("#side").classList.toggle("open");
   route();
   refreshCounts();
@@ -144,8 +218,24 @@ window.addEventListener("hashchange", () => {
   if (state.me) route();
 });
 
+// a failed / expired reset link comes back with the error in the URL hash
+const hashErr = new URLSearchParams(location.hash.replace(/^#/, "")).get("error_description");
+if (hashErr) history.replaceState(null, "", location.pathname);
+
 let lastUser;
-sb.auth.onAuthStateChange((_evt, session) => {
+let recovering = false;
+sb.auth.onAuthStateChange((evt, session) => {
+  if (evt === "PASSWORD_RECOVERY") {
+    recovering = true;
+    lastUser = session?.user?.id || null;
+    setTimeout(() => newPasswordView(), 0);
+    return;
+  }
+  if (recovering && session) return; // stay on the new-password screen
+  if (!session && hashErr && lastUser === undefined) {
+    lastUser = null;
+    return setTimeout(() => loginView(`That reset link is invalid or has expired (${hashErr}). Request a new one.`), 0);
+  }
   const uid = session?.user?.id || null;
   if (uid === lastUser) return; // ignore token refreshes
   lastUser = uid;
