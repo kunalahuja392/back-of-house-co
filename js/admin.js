@@ -829,7 +829,7 @@ export async function settings(el) {
         <div class="field"><label>Order placed with vendor within</label><input type="number" step="0.5" name="sla_vendor_order_hrs" value="${s.sla_vendor_order_hrs}"></div>
         <div class="field"><label>1st follow-up within</label><input type="number" step="0.5" name="sla_followup1_hrs" value="${s.sla_followup1_hrs}"></div>
         <div class="field"><label>2nd follow-up within</label><input type="number" step="0.5" name="sla_followup2_hrs" value="${s.sla_followup2_hrs}"></div>
-        <div class="field"><label>Payment completed within (clock hrs of order)</label><input type="number" step="1" name="sla_payment_hrs" value="${s.sla_payment_hrs}"></div>
+        <div class="field"><label>Payment completed within (working hrs after delivery)</label><input type="number" step="0.5" name="sla_payment_hrs" value="${s.sla_payment_hrs}"></div>
       </div>
       <button class="btn primary" id="save">Save settings</button>
     </div>`;

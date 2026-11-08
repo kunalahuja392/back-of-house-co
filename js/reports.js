@@ -1,4 +1,4 @@
-import { sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, q, tabs, todayIST, daysAgoIST, downloadCSV, orderSteps, DELIVERY_LABEL } from "./lib.js";
+import { addWorkingHours, sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, q, tabs, todayIST, daysAgoIST, downloadCSV, orderSteps, DELIVERY_LABEL } from "./lib.js";
 
 const sum = (a, f) => a.reduce((s, x) => s + Number(f(x) || 0), 0);
 function groupBy(arr, keyFn) { const m = new Map(); arr.forEach((x) => { const k = keyFn(x); if (!m.has(k)) m.set(k, []); m.get(k).push(x); }); return m; }
@@ -144,11 +144,11 @@ export async function reports(el) {
 
   function paymentsOutstanding(d) {
     const rows = d.orders.filter((o) => o.status !== "paid").map((o) => {
-      const due = new Date(new Date(o.created_at).getTime() + state.settings.sla_payment_hrs * 3600000);
-      return { Order: o.order_no, Restaurant: d.rest[o.restaurant_id], Placed: fmtDT(o.created_at), Status: o.status, Amount: Number(o.total), "Payment due": fmtDT(due), "Hours overdue": Math.max(0, Math.round((Date.now() - due) / 3600000)) };
+      const due = o.delivered_at ? addWorkingHours(o.delivered_at, state.settings.sla_payment_hrs) : null;
+      return { Order: o.order_no, Restaurant: d.rest[o.restaurant_id], Placed: fmtDT(o.created_at), Status: o.status, Amount: Number(o.total), Delivered: fmtDT(o.delivered_at), "Payment due": due ? fmtDT(due) : "After delivery", "Hours overdue": due ? Math.max(0, Math.round((Date.now() - due) / 3600000)) : 0 };
     }).sort((a, b) => b["Hours overdue"] - a["Hours overdue"]);
     bindInner = null;
-    return { title: `Payments outstanding (due ${state.settings.sla_payment_hrs} hrs from order)`, html: table([{ key: "Order", label: "#" }, { key: "Restaurant", label: "Restaurant" }, { key: "Placed", label: "Placed" }, { key: "Status", label: "Status" },
+    return { title: `Payments outstanding (due ${state.settings.sla_payment_hrs} working hrs after delivery)`, html: table([{ key: "Order", label: "#" }, { key: "Restaurant", label: "Restaurant" }, { key: "Placed", label: "Placed" }, { key: "Status", label: "Status" }, { key: "Delivered", label: "Delivered" },
       { key: "Amount", label: "Amount", num: true, fmt: money }, { key: "Payment due", label: "Due" }, { key: "Hours overdue", label: "Overdue (hrs)", num: true, fmt: (v) => (v ? `<span class="badge danger">${v}</span>` : "—") }], rows), csv: rows };
   }
 

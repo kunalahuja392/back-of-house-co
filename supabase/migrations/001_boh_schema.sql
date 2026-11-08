@@ -15,7 +15,7 @@ create table if not exists public.boh_settings (
   sla_vendor_order_hrs numeric not null default 2,
   sla_followup1_hrs numeric not null default 4,
   sla_followup2_hrs numeric not null default 2,
-  sla_payment_hrs numeric not null default 24,        -- clock hours from order placement
+  sla_payment_hrs numeric not null default 4,         -- working hours after delivery
   updated_at timestamptz default now()
 );
 insert into public.boh_settings (id) values (1) on conflict do nothing;

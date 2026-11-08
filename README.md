@@ -31,7 +31,7 @@ Restaurants never see cost, vendor or margin — prices come from the `boh_my_ca
 4. 1st follow-up — 4 working hrs
 5. 2nd follow-up — 2 working hrs
 6. Delivered
-7. Payment completed — 24 hrs from order placement
+7. Payment completed — 4 working hrs after delivery
 
 Working hours default to Mon–Sat, 10:00–19:00 IST. Overdue steps are flagged on the dashboard, orders list and the coordinator's screen, and the Coordinator SLA report shows the on-time %.
 

@@ -4,7 +4,7 @@ import { orderModal } from "./admin.js";
 export async function tasks(el) {
   el.innerHTML = `
     <div class="page-head"><div><h1>My assigned orders</h1>
-      <div class="muted">Acknowledge within ${state.settings.sla_ack_hrs} working hr → order with vendor within ${state.settings.sla_vendor_order_hrs} → 1st follow-up ${state.settings.sla_followup1_hrs} → 2nd follow-up ${state.settings.sla_followup2_hrs} → delivered → payment within ${state.settings.sla_payment_hrs} hrs of order.</div></div>
+      <div class="muted">Acknowledge within ${state.settings.sla_ack_hrs} working hr → order with vendor within ${state.settings.sla_vendor_order_hrs} → 1st follow-up ${state.settings.sla_followup1_hrs} → 2nd follow-up ${state.settings.sla_followup2_hrs} → delivered → payment within ${state.settings.sla_payment_hrs} working hrs of delivery.</div></div>
       <select id="st" style="max-width:200px"><option value="open">Open</option><option value="done">Completed (last 30 days)</option></select></div>
     <div id="list"></div>`;
   const load = async () => {

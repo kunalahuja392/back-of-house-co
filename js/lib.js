@@ -180,7 +180,7 @@ export function orderSteps(o, s = state.settings) {
     { key: "followup1", label: `1st follow-up (${s.sla_followup1_hrs} working hrs)`, at: o.followup1_at, due: addWorkingHours(o.vendor_ordered_at, s.sla_followup1_hrs, s) },
     { key: "followup2", label: `2nd follow-up (${s.sla_followup2_hrs} working hrs)`, at: o.followup2_at, due: addWorkingHours(o.followup1_at, s.sla_followup2_hrs, s) },
     { key: "delivered", label: "Mark delivered", at: o.delivered_at, due: o.delivery_date ? new Date(o.delivery_date + "T" + s.work_end + "+05:30") : null },
-    { key: "paid", label: `Payment completed (${s.sla_payment_hrs} hrs of order)`, at: o.paid_at, due: new Date(new Date(o.created_at).getTime() + s.sla_payment_hrs * 3600000) },
+    { key: "paid", label: `Payment completed (${s.sla_payment_hrs} working hrs after delivery)`, at: o.paid_at, due: addWorkingHours(o.delivered_at, s.sla_payment_hrs, s) },
   ];
   const now = Date.now();
   for (const st of steps) {
