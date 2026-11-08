@@ -66,7 +66,6 @@ function loginView(msg = "") {
         <div class="field"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div>
         <button class="btn primary" style="width:100%;justify-content:center">Sign in</button>
       </form>
-      <p class="small muted" style="margin-top:1.5rem">First time setting up? <a href="#/setup">Create the super admin</a></p>
     </div></div>
   </div>`;
   $("#lf").onsubmit = async (e) => {
@@ -74,34 +73,6 @@ function loginView(msg = "") {
     const f = new FormData(e.target);
     const { error } = await sb.auth.signInWithPassword({ email: f.get("email"), password: f.get("password") });
     if (error) toast(error.message, true);
-  };
-}
-
-function setupView() {
-  root.innerHTML = `
-  <div class="login"><div class="hero"><div class="brand"><span class="logo">B</span> Back of House Co</div>
-    <div><h1>First-time setup</h1><p style="opacity:.85">Creates the super admin account. This works only once.</p></div><div></div></div>
-    <div class="form"><div>
-      <h2>Create super admin</h2>
-      <p class="muted small">If this email already has an account in this Supabase project, enter its existing password.</p>
-      <form id="sf">
-        <div class="field"><label>Full name</label><input name="full_name" required></div>
-        <div class="field"><label>Phone</label><input name="phone"></div>
-        <div class="field"><label>Email</label><input name="email" type="email" required></div>
-        <div class="field"><label>Password (min 8 characters)</label><input name="password" type="password" minlength="8" required></div>
-        <button class="btn primary" style="width:100%;justify-content:center">Create & sign in</button>
-      </form>
-      <p class="small"><a href="#/">Back to sign in</a></p>
-    </div></div></div>`;
-  $("#sf").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = Object.fromEntries(new FormData(e.target));
-    try {
-      await callUsersFn({ action: "bootstrap", ...f });
-      toast("Super admin created");
-      location.hash = "#/";
-      await sb.auth.signInWithPassword({ email: f.email, password: f.password });
-    } catch (err) { toast(err.message, true); }
   };
 }
 
@@ -158,7 +129,7 @@ function route() {
 
 // ---------------------------------------------------------------- boot
 async function loadMe(session) {
-  if (!session) { state.me = null; return location.hash.startsWith("#/setup") ? setupView() : loginView(); }
+  if (!session) { state.me = null; return loginView(); }
   const { data: me } = await sb.from("boh_users").select("*, restaurant:boh_restaurants!boh_users_restaurant_id_fkey(id,name)").eq("id", session.user.id).maybeSingle();
   if (!me || !me.active) {
     await sb.auth.signOut();
@@ -171,8 +142,6 @@ async function loadMe(session) {
 
 window.addEventListener("hashchange", () => {
   if (state.me) route();
-  else if (location.hash.startsWith("#/setup")) setupView();
-  else loginView();
 });
 
 let lastUser;

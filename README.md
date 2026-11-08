@@ -41,7 +41,9 @@ Restaurant-wise sales · Product × restaurant (who buys what) · Category sales
 
 ## First-time setup
 
-1. Open the site → **Create the super admin** (only allowed for the owner email set in the edge function, and only once).
+1. The super admin is created privately: Supabase dashboard → Authentication → Users → Add user (auto-confirm), then promote it with
+   `insert into boh_users (id, email, full_name, role) select id, email, 'Super Admin', 'super_admin' from auth.users where email = '<email>';`
+   There is no public sign-up or setup page.
 2. Settings → check working hours, cut-off and support phone.
 3. Categories → set default mark-ups. Vendors → add vendors with all phone numbers and delivery style.
 4. Products → add products (or **Import CSV** with columns `category,name,unit,brand,sku,description`) and their vendor rates.

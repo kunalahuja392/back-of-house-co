@@ -1,11 +1,8 @@
 // Back of House Co — user management (runs with the service role, so the browser never needs it)
 // Actions:
-//   bootstrap    – one-time creation of the first super admin (only for BOOTSTRAP_EMAIL, only while none exists)
 //   create_user  – admins create coordinators / restaurant users; super admin can also create admins
 //   set_password – admins reset a user's password
 import { createClient } from "npm:@supabase/supabase-js@2";
-
-const BOOTSTRAP_EMAIL = "kunalahuja392@gmail.com";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -19,36 +16,9 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
     const url = Deno.env.get("SUPABASE_URL")!;
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const admin = createClient(url, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
     const body = await req.json();
     const action = body.action;
-
-    // ---------------------------------------------------------------- bootstrap
-    if (action === "bootstrap") {
-      const { count } = await admin.from("boh_users").select("id", { count: "exact", head: true }).eq("role", "super_admin");
-      if ((count ?? 0) > 0) return json({ error: "Setup already completed. Please sign in." }, 400);
-      const email = String(body.email || "").trim().toLowerCase();
-      if (email !== BOOTSTRAP_EMAIL) return json({ error: "This email is not allowed to run first-time setup." }, 403);
-      if (!body.password || String(body.password).length < 8) return json({ error: "Password must be at least 8 characters." }, 400);
-
-      let userId: string | undefined;
-      const created = await admin.auth.admin.createUser({ email, password: body.password, email_confirm: true });
-      if (created.error) {
-        // account already exists (shared Supabase project) – prove ownership by signing in
-        const anon = createClient(url, anonKey, { auth: { persistSession: false } });
-        const signin = await anon.auth.signInWithPassword({ email, password: body.password });
-        if (signin.error) return json({ error: "An account with this email already exists. Enter its existing password." }, 400);
-        userId = signin.data.user?.id;
-      } else {
-        userId = created.data.user?.id;
-      }
-      const { error } = await admin.from("boh_users").upsert({
-        id: userId, email, full_name: body.full_name || "Super Admin", phone: body.phone || null, role: "super_admin", active: true,
-      });
-      if (error) return json({ error: error.message }, 400);
-      return json({ ok: true });
-    }
 
     // ---------------------------------------------------------------- authenticated actions
     const token = (req.headers.get("Authorization") || "").replace("Bearer ", "");
