@@ -52,7 +52,7 @@ function loginView(msg = "") {
     <div class="hero">
       <div class="brand"><span class="logo">B</span> Back of House Co</div>
       <div>
-        <h1>Everything your kitchen runs on —<br>ordered in one place.</h1>
+        <h1>Everything your kitchen runs on, ordered in one place.</h1>
         <p style="max-width:440px;opacity:.85">Raw material, disposables, cleaning supplies and machines. Order before 4 PM, delivered tomorrow.</p>
       </div>
       <div class="small" style="opacity:.6">Accounts are created by the Back of House Co team.</div>
