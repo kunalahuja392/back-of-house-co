@@ -1,8 +1,8 @@
-import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=9";
-import * as admin from "./admin.js?v=9";
-import * as reports from "./reports.js?v=9";
-import * as coord from "./coordinator.js?v=9";
-import * as cust from "./customer.js?v=9";
+import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=11";
+import * as admin from "./admin.js?v=11";
+import * as reports from "./reports.js?v=11";
+import * as coord from "./coordinator.js?v=11";
+import * as cust from "./customer.js?v=11";
 
 const root = document.getElementById("root");
 
@@ -180,7 +180,7 @@ function shell() {
 async function refreshCounts() {
   if (!["admin", "super_admin"].includes(state.me.role)) return;
   const [o, r, c] = await Promise.all([
-    sb.from("boh_orders").select("id", { count: "exact", head: true }).eq("status", "placed"),
+    sb.from("boh_orders").select("id", { count: "exact", head: true }).neq("status", "cancelled").or("status.eq.placed,payment_status.eq.under_review"),
     sb.from("boh_product_requests").select("id", { count: "exact", head: true }).eq("status", "pending"),
     sb.from("boh_complaints").select("id", { count: "exact", head: true }).neq("status", "resolved"),
   ]);

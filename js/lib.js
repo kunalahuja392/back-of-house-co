@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=9";
+import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=11";
 
 export const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -146,6 +146,15 @@ export const statusBadge = (s) => {
   const cls = { placed: "warn", allocated: "info", acknowledged: "info", vendor_ordered: "info", followup1: "info", followup2: "info", delivered: "ok", paid: "ok", cancelled: "danger" }[s] || "";
   return `<span class="badge ${cls}">${esc(STATUS_LABEL[s] || s)}</span>`;
 };
+export const PAY_MODE = { prepaid: "Pre-pay", cod: "Pay on delivery" };
+// payment state as the restaurant and team see it
+export function payBadge(o) {
+  if (o.status === "cancelled") return "";
+  if (o.payment_status === "paid") return '<span class="badge ok">Paid</span>';
+  if (o.payment_status === "under_review") return '<span class="badge warn">Payment under approval</span>';
+  if (o.payment_rejected_note) return '<span class="badge danger">Not paid — payment rejected</span>';
+  return '<span class="badge danger">Unpaid</span>';
+}
 export const DELIVERY_LABEL = { vendor_delivers: "Vendor delivers", porter: "Porter", self_pickup: "Self pickup" };
 
 // ---------------------------------------------------------------- working-hours SLA engine (IST)

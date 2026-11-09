@@ -1,8 +1,8 @@
 import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
-  OVERHEAD_KINDS, todayIST, daysAgoIST, downloadCSV, promptBox,
-} from "./lib.js?v=9";
+  OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox,
+} from "./lib.js?v=11";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -72,7 +72,8 @@ export async function dashboard(el) {
       <div class="card stat"><div class="l">Orders today</div><div class="v">${live.filter((o) => isToday(o.created_at)).length}</div></div>
       <div class="card stat"><div class="l">Awaiting allocation</div><div class="v">${live.filter((o) => o.status === "placed").length}</div></div>
       <div class="card stat"><div class="l">Overdue</div><div class="v" style="color:var(--danger)">${overdue.length}</div></div>
-      <div class="card stat"><div class="l">Payments pending</div><div class="v">${live.filter((o) => o.status === "delivered").length}</div></div>
+      <div class="card stat"><div class="l">Payments to verify</div><div class="v" style="color:var(--warn)">${live.filter((o) => o.payment_status === "under_review").length}</div><div class="small muted"><a href="#/orders">Orders → Payment: Under approval</a></div></div>
+      <div class="card stat"><div class="l">Unpaid (delivered / pre-pay)</div><div class="v">${money(live.filter((o) => o.payment_status !== "paid" && (o.payment_mode === "prepaid" || o.status === "delivered")).reduce((a, o) => a + Number(o.total), 0))}</div></div>
       <div class="card stat"><div class="l">Sales this month</div><div class="v">${money(sales)}</div></div>
       <div class="card stat"><div class="l">Gross margin this month</div><div class="v">${money(sales - cost)}</div><div class="small muted">${sales ? pct(((sales - cost) / sales) * 100) : ""}</div></div>
       <div class="card stat"><div class="l">Overheads this month</div><div class="v">${money(oh)}</div><div class="small muted">Porter ${money(porter)}</div></div>
@@ -81,7 +82,7 @@ export async function dashboard(el) {
       <div class="card stat"><div class="l">Open complaints</div><div class="v">${comps.length}</div></div>
     </div>
     <div class="card" style="margin-top:1rem"><h2>Needs attention</h2>
-      ${orderTable([...overdue, ...live.filter((o) => o.status === "placed" && !overdue.includes(o))].slice(0, 15), L)}</div>`;
+      ${orderTable([...live.filter((o) => o.payment_status === "under_review"), ...overdue, ...live.filter((o) => o.status === "placed" && !overdue.includes(o))].filter((o, i, a) => a.indexOf(o) === i).slice(0, 20), L)}</div>`;
   bindOrderTable(el, L, () => dashboard(el));
 }
 
@@ -93,7 +94,7 @@ function coordNames(o, L) {
 
 function orderTable(rows, L) {
   if (!rows.length) return `<div class="empty">No orders here.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>#</th><th>Restaurant</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Status</th><th>Coordinators</th><th>SLA</th><th></th></tr></thead><tbody>
+  return `<div class="table-wrap"><table><thead><tr><th>#</th><th>Restaurant</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Status</th><th>Payment</th><th>Coordinators</th><th>SLA</th><th></th></tr></thead><tbody>
     ${rows.map((o) => `<tr>
       <td><b>${o.order_no}</b></td>
       <td>${esc(L.restMap[o.restaurant_id]?.name || "—")}</td>
@@ -101,6 +102,7 @@ function orderTable(rows, L) {
       <td>${fmtD(o.delivery_date)}</td>
       <td class="right">${money(o.total)}</td>
       <td>${statusBadge(o.status)}</td>
+      <td>${payBadge(o)}<div class="small muted">${PAY_MODE[o.payment_mode] || ""}</div></td>
       <td>${coordNames(o, L)}</td>
       <td>${dueBadge(o)}</td>
       <td class="right" style="white-space:nowrap">
@@ -146,6 +148,35 @@ async function allocateModal(orderId, L, reload) {
     toast(left ? `Saved — ${left} categor${left > 1 ? "ies" : "y"} still unallocated` : "Order allocated");
     m.close(); refreshCounts(); reload?.();
   };
+}
+
+// payment: approve / reject a restaurant's "already paid", or record a collection directly
+export async function paymentAction(o, action, done) {
+  if (action === "approve") {
+    if (!(await confirmBox(`Approve payment for order #${o.order_no} (${money(o.total)})? Reference given: ${o.payment_claim_ref || "—"}`))) return;
+    await q(sb.rpc("boh_mark_paid", { p_order: o.id, p_ref: o.payment_claim_ref }));
+    toast("Payment approved");
+  } else if (action === "reject") {
+    const note = await promptBox("Reject payment", "Reason (shown to the restaurant), e.g. amount not received / wrong UTR");
+    if (!note) return;
+    await q(sb.rpc("boh_reject_payment", { p_order: o.id, p_note: note }));
+    toast("Payment rejected — restaurant will see it as Not paid");
+  } else {
+    const ref = await promptBox("Payment collected", "Payment reference (UPI / cheque / cash)");
+    if (ref === null) return;
+    await q(sb.rpc("boh_mark_paid", { p_order: o.id, p_ref: ref || "Collected" }));
+    toast("Payment recorded");
+  }
+  refreshCounts(); done?.();
+}
+export function paymentButtons(o) {
+  if (o.status === "cancelled" || o.payment_status === "paid") return "";
+  if (o.payment_status === "under_review")
+    return `<button class="btn sm danger" data-payact="reject" data-oid="${o.id}">Reject</button> <button class="btn sm primary" data-payact="approve" data-oid="${o.id}">Approve payment</button>`;
+  return `<button class="btn sm" data-payact="collect" data-oid="${o.id}">Mark payment collected</button>`;
+}
+export function bindPaymentButtons(root, list, done) {
+  $$("[data-payact]", root).forEach((b) => (b.onclick = () => paymentAction(list.find((o) => o.id === b.dataset.oid), b.dataset.payact, done)));
 }
 
 // move one category forward; delivery asks for overhead charges
@@ -240,8 +271,15 @@ export async function orderModal(orderId, reload) {
           ${staff ? `<div class="row between small muted"><span>Cost ${money(o.cost_total)} · Overheads ${money(ohTotal)}</span><span>Net margin ${money(o.total - o.cost_total - ohTotal)}</span></div>` : ""}
         </div>
         <div>
-          <h3>Order status</h3>${stepsHTML(orderSteps(o))}
-          ${o.payment_ref ? `<p class="small"><b>Payment ref:</b> ${esc(o.payment_ref)}</p>` : ""}
+          <h3>Payment</h3>
+          <div class="card" style="padding:.7rem">
+            <div class="row between"><span>${PAY_MODE[o.payment_mode] || ""}</span>${payBadge(o)}</div>
+            ${o.payment_claim_ref && o.payment_status !== "paid" ? `<div class="small" style="margin-top:.3rem">Restaurant says paid · ref <b>${esc(o.payment_claim_ref)}</b> · ${fmtDT(o.payment_claimed_at)}</div>` : ""}
+            ${o.payment_rejected_note && o.payment_status === "unpaid" ? `<div class="small" style="color:var(--danger);margin-top:.3rem">Rejected ${fmtDT(o.payment_rejected_at)}: ${esc(o.payment_rejected_note)}</div>` : ""}
+            ${o.payment_status === "paid" ? `<div class="small" style="margin-top:.3rem">Confirmed ${fmtDT(o.paid_at)}${o.payment_ref ? " · ref " + esc(o.payment_ref) : ""}</div>` : ""}
+            ${staff || onOrder ? `<div class="row" style="justify-content:flex-end;margin-top:.5rem">${paymentButtons(o)}</div>` : ""}
+          </div>
+          <h3 style="margin-top:1rem">Order status</h3>${stepsHTML(orderSteps(o))}
           <h3 style="margin-top:1rem">Overheads ${ohTotal ? "· " + money(ohTotal) : ""}</h3>
           ${ohs.length ? `<table><tbody>${ohs.map((x) => `<tr><td>${esc(x.kind)}</td><td class="small muted">${esc(x.note || "")} · ${esc(x.by?.full_name || "")}</td><td class="right">${money(x.amount)}</td></tr>`).join("")}</tbody></table>` : '<div class="small muted">None recorded.</div>'}
           ${(staff || onOrder) && o.status !== "cancelled" ? `<button class="btn sm" id="addoh" style="margin-top:.4rem">+ Add overhead</button>` : ""}
@@ -252,7 +290,7 @@ export async function orderModal(orderId, reload) {
     footer: `${staff && !["paid", "cancelled"].includes(o.status) ? `<button class="btn danger" id="cancel">Cancel order</button>` : ""}
       <span class="grow"></span>
       ${staff && !["delivered", "paid", "cancelled"].includes(o.status) ? `<button class="btn" id="realloc">${o.status === "placed" ? "Allocate" : "Reassign"}</button>` : ""}
-      ${o.status === "delivered" && (staff || onOrder) ? `<button class="btn primary" id="paid">Mark payment completed</button>` : ""}`,
+`,
   });
   const reopen = () => { m.close(); reload?.(); orderModal(orderId, reload); };
   $$("[data-adv]", m.el).forEach((b) => (b.onclick = () => advanceAlloc(o.allocs.find((a) => a.id === b.dataset.adv), b.dataset.step, reopen)));
@@ -262,12 +300,7 @@ export async function orderModal(orderId, reload) {
     for (const x of list) await q(sb.rpc("boh_add_overhead", { p_order: orderId, p_kind: x.kind, p_amount: x.amount, p_note: x.note || null }));
     toast("Overhead added"); reopen();
   });
-  $("#paid", m.el)?.addEventListener("click", async () => {
-    const ref = await promptBox("Payment completed", "Payment reference (UPI / cheque / cash)");
-    if (ref === null) return;
-    await q(sb.rpc("boh_mark_paid", { p_order: orderId, p_ref: ref }));
-    toast("Payment recorded"); m.close(); reload?.(); refreshCounts();
-  });
+  bindPaymentButtons(m.el, [o], reopen);
   $("#realloc", m.el)?.addEventListener("click", async () => { m.close(); allocateModal(orderId, await lookups(), reload); });
   $("#cancel", m.el)?.addEventListener("click", async () => {
     if (!(await confirmBox(`Cancel order #${o.order_no}?`))) return;
@@ -285,6 +318,7 @@ export async function orders(el) {
     <div class="card"><div class="row">
       <div><label>Status</label><select id="fs"><option value="open">Open (not paid)</option><option value="placed">Awaiting allocation</option><option value="">All</option>
         ${["allocated", "acknowledged", "vendor_ordered", "followup1", "followup2", "delivered", "paid", "cancelled"].map((s) => `<option value="${s}">${s}</option>`).join("")}</select></div>
+      <div><label>Payment</label><select id="fp"><option value="">All</option><option value="under_review">Under approval (to verify)</option><option value="unpaid">Unpaid</option><option value="paid">Paid</option></select></div>
       <div><label>Restaurant</label><select id="fr"><option value="">All</option>${mySet.size ? `<option value="__mine">My restaurants (${mySet.size})</option>` : ""}${L.rests.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("")}</select></div>
       <div><label>Coordinator</label><select id="fc"><option value="">All</option>${L.team.map((t) => `<option value="${t.id}">${esc(t.full_name)}</option>`).join("")}</select></div>
       <div><label>From</label><input type="date" id="ff" value="${daysAgoIST(30)}"></div>
@@ -296,6 +330,7 @@ export async function orders(el) {
       .gte("created_at", $("#ff").value + "T00:00:00+05:30").lte("created_at", $("#ft").value + "T23:59:59+05:30");
     const s = $("#fs").value;
     if (s === "open") qq = qq.not("status", "in", "(paid,cancelled)"); else if (s) qq = qq.eq("status", s);
+    if ($("#fp").value) qq = qq.eq("payment_status", $("#fp").value);
     const r = $("#fr").value;
     if (r === "__mine") qq = qq.in("restaurant_id", [...mySet]); else if (r) qq = qq.eq("restaurant_id", r);
     let rows = await q(qq);
@@ -1054,6 +1089,7 @@ export async function settings(el) {
       <div class="form-grid">
         <div class="field"><label>Company name</label><input name="company_name" value="${esc(s.company_name)}"></div>
         <div class="field"><label>Support phone (shown to restaurants)</label><input name="support_phone" value="${esc(s.support_phone || "")}"></div>
+        <div class="field" style="grid-column:1/-1"><label>Payment instructions shown to restaurants (UPI ID, bank account, QR link…)</label><textarea name="payment_instructions" rows="3" placeholder="UPI: backofhouse@okbank&#10;Bank: XYZ Bank, A/c 1234567890, IFSC XYZB0000123">${esc(s.payment_instructions || "")}</textarea></div>
         <div class="field"><label>Order cut-off for next-day delivery</label><input name="order_cutoff" type="time" value="${s.order_cutoff.slice(0, 5)}"></div>
         <div class="field"><label>Working day starts</label><input name="work_start" type="time" value="${s.work_start.slice(0, 5)}"></div>
         <div class="field"><label>Working day ends</label><input name="work_end" type="time" value="${s.work_end.slice(0, 5)}"></div>

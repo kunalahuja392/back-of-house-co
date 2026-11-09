@@ -1,4 +1,4 @@
-import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks } from "./lib.js?v=9";
+import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks, payBadge, PAY_MODE } from "./lib.js?v=11";
 
 const CART_KEY = () => "boh_cart_" + state.me.restaurant_id;
 const loadCart = () => { try { return JSON.parse(localStorage.getItem(CART_KEY()) || "{}"); } catch { return {}; } };
@@ -29,9 +29,10 @@ function cutoffInfo() {
 export async function home(el) {
   const [slides, orders, cat] = await Promise.all([
     q(sb.from("boh_featured").select("*, product:boh_products(id,name,image_url,description,unit,brand)").eq("active", true)),
-    q(sb.from("boh_orders").select("*").order("created_at", { ascending: false }).limit(5)),
+    q(sb.from("boh_orders").select("*").order("created_at", { ascending: false }).limit(50)),
     myCatalog(true),
   ]);
+  const unpaid = unpaidBanner(orders);
   const open = orders.filter((o) => !["paid", "cancelled"].includes(o.status)).slice(0, 3);
   const coords = await Promise.all(open.map((o) => q(sb.rpc("boh_order_coordinators", { p_order: o.id }))));
   const ci = cutoffInfo();
@@ -40,6 +41,7 @@ export async function home(el) {
     <div class="page-head"><div><h1>Hello, ${esc(state.me.restaurant?.name || state.me.full_name)}</h1></div>
       <a class="btn primary" href="#/order">🛒 Place today's order</a></div>
     <div class="notice ${ci.open ? "green" : ""}">${ci.html}</div>
+    ${unpaid ? unpaid.replace("</div>", ' <a href="#/myorders">Go to my orders →</a></div>') : ""}
     <div class="grid c2">
       <div class="card"><h2>Your coordinators</h2>
         ${open.length ? open.map((o, i) => `<div style="margin-bottom:.6rem"><b>Order #${o.order_no}</b> <span class="small muted">delivery ${fmtD(o.delivery_date)}</span>
@@ -53,7 +55,7 @@ export async function home(el) {
         <div class="row" style="margin-top:.5rem"><a class="btn" href="#/browse">Browse more products</a></div></div>
     </div>
     <div class="card"><div class="row between"><h2>Recent orders</h2><a href="#/myorders">See all</a></div>
-      ${orders.length ? `<table><tbody>${orders.map((o) => `<tr><td><b>#${o.order_no}</b></td><td>${fmtDT(o.created_at)}</td><td>Delivery ${fmtD(o.delivery_date)}</td><td class="right">${money(o.total)}</td><td>${statusBadge(o.status)}</td></tr>`).join("")}</tbody></table>`
+      ${orders.length ? `<table><tbody>${orders.slice(0, 5).map((o) => `<tr><td><b>#${o.order_no}</b></td><td>${fmtDT(o.created_at)}</td><td>Delivery ${fmtD(o.delivery_date)}</td><td class="right">${money(o.total)}</td><td>${statusBadge(o.status)}</td><td>${payBadge(o)}</td></tr>`).join("")}</tbody></table>`
         : `<div class="empty">No orders yet.</div>`}</div>`;
   renderSlides($("#slides", el), slides, cat);
 }
@@ -191,21 +193,65 @@ export async function placeOrder(el) {
         <table><thead><tr><th>Product</th><th class="right">Qty</th><th class="right">Price</th><th class="right">Amount</th></tr></thead><tbody>
         ${items.map((i) => `<tr><td>${esc(i.p.product_name)}</td><td class="right">${num(i.qty, 3)} ${esc(i.p.unit)}</td><td class="right">${money(i.p.price)}</td><td class="right">${money(i.qty * i.p.price)}</td></tr>`).join("")}
         <tr><td colspan="3"><b>Total</b></td><td class="right"><b>${money(total)}</b></td></tr></tbody></table>
-        <div class="field" style="margin-top:1rem"><label>Note for our team (optional)</label><textarea id="nt" rows="2" placeholder="e.g. deliver before 9 AM, call on arrival"></textarea></div>`,
+        <div class="field" style="margin-top:1rem"><label>How will you pay? *</label>
+          <div class="row">
+            <label class="paymode"><input type="radio" name="pm" value="cod" checked> <span><b>Pay on delivery</b><br><span class="small muted">Pay when the goods arrive</span></span></label>
+            <label class="paymode"><input type="radio" name="pm" value="prepaid"> <span><b>Pre-pay</b><br><span class="small muted">Pay now, before delivery</span></span></label>
+          </div></div>
+        <div class="field"><label>Note for our team (optional)</label><textarea id="nt" rows="2" placeholder="e.g. deliver before 9 AM, call on arrival"></textarea></div>`,
       footer: `<button class="btn" id="back">Edit</button><button class="btn primary" id="place">Confirm order</button>`,
     });
     $("#back", m.el).onclick = m.close;
     $("#place", m.el).onclick = async (e) => {
       e.target.disabled = true;
       try {
-        await q(sb.rpc("boh_place_order", { p_items: items.map(({ product_id, qty }) => ({ product_id, qty })), p_notes: $("#nt", m.el).value || null }));
+        const mode = $('[name="pm"]:checked', m.el).value;
+        const oid = await q(sb.rpc("boh_place_order", { p_items: items.map(({ product_id, qty }) => ({ product_id, qty })), p_notes: $("#nt", m.el).value || null, p_payment_mode: mode }));
         cart = {}; saveCart(cart); m.close();
         toast("Order placed! Your coordinator will take it from here.");
         location.hash = "#/myorders";
+        if (mode === "prepaid") {
+          const o = await q(sb.from("boh_orders").select("*").eq("id", oid).single());
+          payNow(o, () => window.dispatchEvent(new HashChangeEvent("hashchange")));
+        }
       } catch { e.target.disabled = false; }
     };
   };
   recalc();
+}
+
+// ====================================================================== PAYMENT
+function unpaidBanner(orders) {
+  const due = orders.filter((o) => o.status !== "cancelled" && o.payment_status === "unpaid" && (o.payment_mode === "prepaid" || ["delivered", "paid"].includes(o.status)));
+  if (!due.length) return "";
+  const rej = due.filter((o) => o.payment_rejected_note).length;
+  return `<div class="notice" style="background:#fbeeed;border-color:#efc5c1;color:#8a2a23">💳 <b>${money(due.reduce((a, o) => a + Number(o.total), 0))} unpaid</b> across ${due.length} order${due.length > 1 ? "s" : ""}${rej ? ` (${rej} payment${rej > 1 ? "s" : ""} rejected — please check)` : ""}. Please pay and tap <b>Pay now → I've already paid</b>.</div>`;
+}
+
+function payInstructions() {
+  const t = (state.settings.payment_instructions || "").trim();
+  return t ? `<div class="card" style="padding:.75rem;white-space:pre-wrap">${esc(t)}</div>`
+    : `<div class="muted">Please contact your coordinator or ${state.settings.support_phone ? "call " + esc(state.settings.support_phone) : "our team"} for payment details.</div>`;
+}
+
+// "Pay now": shows how to pay, and lets the restaurant say "I've already paid" with a reference
+export function payNow(o, done) {
+  const m = modal({
+    title: `Pay for order #${o.order_no} — ${money(o.total)}`,
+    body: `${o.payment_rejected_note ? `<div class="notice" style="background:#fbeeed;border-color:#efc5c1;color:#8a2a23"><b>Your last payment was not approved:</b> ${esc(o.payment_rejected_note)}</div>` : ""}
+      <h3>How to pay</h3>${payInstructions()}
+      <h3 style="margin-top:1rem">Already paid?</h3>
+      <p class="small muted">Enter the UPI / bank transaction ID (UTR), or cheque number. Our team will check and confirm it.</p>
+      <div class="field"><label>Payment reference *</label><input id="ref" placeholder="e.g. UTR 4123 5678 9012"></div>`,
+    footer: `<button class="btn" id="later">Pay later</button><button class="btn primary" id="paid">I've already paid</button>`,
+  });
+  $("#later", m.el).onclick = m.close;
+  $("#paid", m.el).onclick = async () => {
+    const ref = $("#ref", m.el).value.trim();
+    if (!ref) return toast("Enter the payment reference", true);
+    await q(sb.rpc("boh_claim_payment", { p_order: o.id, p_ref: ref }));
+    toast("Thanks! Payment is under approval."); m.close(); done?.();
+  };
 }
 
 // ====================================================================== MY ORDERS
@@ -215,25 +261,32 @@ export async function myOrders(el) {
   const orders = await q(sb.from("boh_orders").select("*").order("created_at", { ascending: false }).limit(200));
   el.innerHTML = `
     <div class="page-head"><h1>My orders</h1><a class="btn primary" href="#/order">+ New order</a></div>
-    <div class="table-wrap"><table><thead><tr><th>#</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Status</th><th></th></tr></thead><tbody>
+    ${unpaidBanner(orders)}
+    <div class="table-wrap"><table><thead><tr><th>#</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Order status</th><th>Payment</th><th></th></tr></thead><tbody>
     ${orders.map((o) => `<tr><td><b>${o.order_no}</b></td><td>${fmtDT(o.created_at)}</td><td>${fmtD(o.delivery_date)}</td><td class="right">${money(o.total)}</td><td>${statusBadge(o.status)}</td>
-      <td class="right"><button class="btn sm" data-v="${o.id}">View</button></td></tr>`).join("") || '<tr><td colspan="6" class="empty">No orders yet.</td></tr>'}
+      <td>${payBadge(o)}<div class="small muted">${PAY_MODE[o.payment_mode] || ""}</div>${o.payment_status === "unpaid" && o.payment_rejected_note ? `<div class="small" style="color:var(--danger)">${esc(o.payment_rejected_note)}</div>` : ""}</td>
+      <td class="right" style="white-space:nowrap">${o.status !== "cancelled" && o.payment_status === "unpaid" ? `<button class="btn sm accent" data-pay="${o.id}">Pay now</button> ` : ""}<button class="btn sm" data-v="${o.id}">View</button></td></tr>`).join("") || '<tr><td colspan="7" class="empty">No orders yet.</td></tr>'}
     </tbody></table></div>`;
+  const reload = () => myOrders(el);
+  $$("[data-pay]", el).forEach((b) => (b.onclick = () => payNow(orders.find((x) => x.id === b.dataset.pay), reload)));
   $$("[data-v]", el).forEach((b) => (b.onclick = async () => {
     const o = orders.find((x) => x.id === b.dataset.v);
     const [lines, coords] = await Promise.all([q(sb.rpc("boh_order_lines", { p_order: o.id })), q(sb.rpc("boh_order_coordinators", { p_order: o.id }))]);
     const m = modal({
       title: `Order #${o.order_no}`,
-      body: `<div class="row" style="margin-bottom:1rem">${statusBadge(o.status)}<span class="muted">Delivery ${fmtD(o.delivery_date)}</span></div>
+      body: `<div class="row" style="margin-bottom:1rem">${statusBadge(o.status)} ${payBadge(o)}<span class="muted">${PAY_MODE[o.payment_mode] || ""} · Delivery ${fmtD(o.delivery_date)}</span></div>
+        ${o.payment_status === "under_review" ? `<div class="notice">You told us you paid (ref <b>${esc(o.payment_claim_ref)}</b>). Our team is checking it.</div>` : ""}
+        ${o.payment_status === "unpaid" && o.payment_rejected_note ? `<div class="notice" style="background:#fbeeed;border-color:#efc5c1;color:#8a2a23"><b>Not paid:</b> your payment could not be approved — ${esc(o.payment_rejected_note)}</div>` : ""}
         <div class="steps" style="margin-bottom:1rem">${CUST_STEPS.map(([k, l]) => `<div class="step ${o[k] ? "done" : ""}"><span class="dot"></span><div>${l}</div><div class="small muted">${o[k] ? fmtDT(o[k]) : ""}</div></div>`).join("")}</div>
         ${coords.length ? `<div class="card" style="padding:.7rem;margin-bottom:1rem"><b>Your coordinators</b>${coords.map((c) => `<div class="small">${esc(c.category_name)}: ${esc(c.full_name)} 📞 ${telLinks([c.phone])}</div>`).join("")}</div>` : ""}
         <table><thead><tr><th>Product</th><th class="right">Qty</th><th class="right">Price</th><th class="right">Amount</th></tr></thead><tbody>
         ${lines.map((l) => `<tr><td>${esc(l.product_name)}</td><td class="right">${num(l.qty, 3)} ${esc(l.unit)}</td><td class="right">${money(l.unit_price)}</td><td class="right">${money(l.line_total)}</td></tr>`).join("")}
         <tr><td colspan="3"><b>Total</b></td><td class="right"><b>${money(o.total)}</b></td></tr></tbody></table>
         ${o.notes ? `<p class="small muted">Your note: ${esc(o.notes)}</p>` : ""}`,
-      footer: `<button class="btn" id="cmp">Raise a complaint</button>`,
+      footer: `<button class="btn" id="cmp">Raise a complaint</button>${o.status !== "cancelled" && o.payment_status === "unpaid" ? '<button class="btn accent" id="paynow">Pay now</button>' : ""}`,
     });
     $("#cmp", m.el).onclick = () => { m.close(); complaintForm(o.id, () => (location.hash = "#/complaints")); };
+    $("#paynow", m.el)?.addEventListener("click", () => { m.close(); payNow(o, reload); });
   }));
 }
 

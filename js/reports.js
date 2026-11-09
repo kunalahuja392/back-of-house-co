@@ -1,4 +1,4 @@
-import { addWorkingHours, sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, q, tabs, todayIST, daysAgoIST, downloadCSV, orderSteps, allocSteps, DELIVERY_LABEL } from "./lib.js?v=9";
+import { addWorkingHours, sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, q, tabs, todayIST, daysAgoIST, downloadCSV, orderSteps, allocSteps, DELIVERY_LABEL } from "./lib.js?v=11";
 
 const sum = (a, f) => a.reduce((s, x) => s + Number(f(x) || 0), 0);
 function groupBy(arr, keyFn) { const m = new Map(); arr.forEach((x) => { const k = keyFn(x); if (!m.has(k)) m.set(k, []); m.get(k).push(x); }); return m; }
@@ -67,7 +67,7 @@ export async function reports(el) {
       const oh = sum(d.ohs.filter((x) => x.order.restaurant_id === rid), (x) => x.amount);
       return { Restaurant: d.rest[rid] || "—", Orders: os.length, Sales: sales, Cost: cost, Margin: sales - cost, "Margin %": sales ? ((sales - cost) / sales) * 100 : 0,
         Overheads: oh, "Net margin": sales - cost - oh, "Avg order": sales / os.length,
-        Paid: sum(os.filter((o) => o.status === "paid"), (o) => o.total), Outstanding: sum(os.filter((o) => o.status !== "paid"), (o) => o.total) };
+        Paid: sum(os.filter((o) => o.payment_status === "paid"), (o) => o.total), Outstanding: sum(os.filter((o) => o.payment_status !== "paid"), (o) => o.total) };
     }).sort((a, b) => b.Sales - a.Sales);
     const tot = { Restaurant: "TOTAL", Orders: sum(rows, (r) => r.Orders), Sales: sum(rows, (r) => r.Sales), Cost: sum(rows, (r) => r.Cost) };
     tot.Margin = tot.Sales - tot.Cost; tot["Margin %"] = tot.Sales ? (tot.Margin / tot.Sales) * 100 : 0;
@@ -191,13 +191,26 @@ export async function reports(el) {
   }
 
   function paymentsOutstanding(d) {
-    const rows = d.orders.filter((o) => o.status !== "paid").map((o) => {
-      const due = o.delivered_at ? addWorkingHours(o.delivered_at, state.settings.sla_payment_hrs) : null;
-      return { Order: o.order_no, Restaurant: d.rest[o.restaurant_id], Placed: fmtDT(o.created_at), Status: o.status, Amount: Number(o.total), Delivered: fmtDT(o.delivered_at), "Payment due": due ? fmtDT(due) : "After delivery", "Hours overdue": due ? Math.max(0, Math.round((Date.now() - due) / 3600000)) : 0 };
-    }).sort((a, b) => b["Hours overdue"] - a["Hours overdue"]);
+    const label = (o) => o.payment_status === "under_review" ? "Under approval" : o.payment_rejected_note ? "Rejected — not paid" : "Unpaid";
+    const rows = d.orders.filter((o) => o.payment_status !== "paid").map((o) => {
+      const due = o.payment_mode === "prepaid" ? new Date(o.created_at) : o.delivered_at ? addWorkingHours(o.delivered_at, state.settings.sla_payment_hrs) : null;
+      return { Order: o.order_no, Restaurant: d.rest[o.restaurant_id], Mode: o.payment_mode === "prepaid" ? "Pre-pay" : "Pay on delivery", Payment: label(o),
+        "Claim ref": o.payment_claim_ref || "", "Rejection note": o.payment_status === "unpaid" ? o.payment_rejected_note || "" : "",
+        "Order status": o.status, Amount: Number(o.total), Delivered: fmtDT(o.delivered_at), "Payment due": due ? fmtDT(due) : "After delivery",
+        "Hours overdue": due ? Math.max(0, Math.round((Date.now() - due) / 3600000)) : 0 };
+    }).sort((a, b) => (b.Payment === "Under approval") - (a.Payment === "Under approval") || b["Hours overdue"] - a["Hours overdue"]);
+    const tot = (f) => money(sum(rows.filter(f), (r) => r.Amount));
     bindInner = null;
-    return { title: `Payments outstanding (due ${state.settings.sla_payment_hrs} working hrs after delivery)`, html: table([{ key: "Order", label: "#" }, { key: "Restaurant", label: "Restaurant" }, { key: "Placed", label: "Placed" }, { key: "Status", label: "Status" }, { key: "Delivered", label: "Delivered" },
-      { key: "Amount", label: "Amount", num: true, fmt: money }, { key: "Payment due", label: "Due" }, { key: "Hours overdue", label: "Overdue (hrs)", num: true, fmt: (v) => (v ? `<span class="badge danger">${v}</span>` : "—") }], rows), csv: rows };
+    return { title: `Payments outstanding (pay on delivery due ${state.settings.sla_payment_hrs} working hrs after delivery)`,
+      html: `<div class="grid k4" style="margin-bottom:1rem">
+          <div class="card stat"><div class="l">Total outstanding</div><div class="v">${tot(() => true)}</div></div>
+          <div class="card stat"><div class="l">Under approval</div><div class="v">${tot((r) => r.Payment === "Under approval")}</div></div>
+          <div class="card stat"><div class="l">Rejected — not paid</div><div class="v">${tot((r) => r.Payment === "Rejected — not paid")}</div></div>
+          <div class="card stat"><div class="l">Pre-pay not received</div><div class="v">${tot((r) => r.Mode === "Pre-pay")}</div></div></div>` +
+        table([{ key: "Order", label: "#" }, { key: "Restaurant", label: "Restaurant" }, { key: "Mode", label: "Mode" },
+        { key: "Payment", label: "Payment", fmt: (v) => `<span class="badge ${v === "Under approval" ? "warn" : "danger"}">${esc(v)}</span>` }, { key: "Claim ref", label: "Claim ref" },
+        { key: "Order status", label: "Order" }, { key: "Amount", label: "Amount", num: true, fmt: money }, { key: "Delivered", label: "Delivered" }, { key: "Payment due", label: "Due" },
+        { key: "Hours overdue", label: "Overdue (hrs)", num: true, fmt: (v) => (v ? `<span class="badge danger">${v}</span>` : "—") }], rows), csv: rows };
   }
 
   function complaintsReport(d) {
