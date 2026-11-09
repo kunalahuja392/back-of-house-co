@@ -2,7 +2,7 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox,
-} from "./lib.js?v=11";
+} from "./lib.js?v=13";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -274,7 +274,7 @@ export async function orderModal(orderId, reload) {
           <h3>Payment</h3>
           <div class="card" style="padding:.7rem">
             <div class="row between"><span>${PAY_MODE[o.payment_mode] || ""}</span>${payBadge(o)}</div>
-            ${o.payment_claim_ref && o.payment_status !== "paid" ? `<div class="small" style="margin-top:.3rem">Restaurant says paid · ref <b>${esc(o.payment_claim_ref)}</b> · ${fmtDT(o.payment_claimed_at)}</div>` : ""}
+            ${o.payment_claim_ref && o.payment_status !== "paid" ? `<div class="small" style="margin-top:.3rem">Restaurant says paid${o.payment_claim_method ? " via " + esc(o.payment_claim_method) : ""} · ref <b>${esc(o.payment_claim_ref)}</b> · ${fmtDT(o.payment_claimed_at)}</div>` : ""}
             ${o.payment_rejected_note && o.payment_status === "unpaid" ? `<div class="small" style="color:var(--danger);margin-top:.3rem">Rejected ${fmtDT(o.payment_rejected_at)}: ${esc(o.payment_rejected_note)}</div>` : ""}
             ${o.payment_status === "paid" ? `<div class="small" style="margin-top:.3rem">Confirmed ${fmtDT(o.paid_at)}${o.payment_ref ? " · ref " + esc(o.payment_ref) : ""}</div>` : ""}
             ${staff || onOrder ? `<div class="row" style="justify-content:flex-end;margin-top:.5rem">${paymentButtons(o)}</div>` : ""}
@@ -902,12 +902,13 @@ export async function requests(el) {
     let qq = sb.from("boh_product_requests").select("*, product:boh_products(name,category_id,unit), restaurant:boh_restaurants(name), by:boh_users!boh_product_requests_requested_by_fkey(full_name)").order("created_at", { ascending: false });
     if ($("#st").value) qq = qq.eq("status", $("#st").value);
     const rows = await q(qq);
-    $("#list").innerHTML = `<div class="table-wrap"><table><thead><tr><th>When</th><th>Restaurant</th><th>Product</th><th>Note</th><th>Status</th><th class="right">Mark-up</th><th></th></tr></thead><tbody>
+    $("#list").innerHTML = `<div class="table-wrap"><table><thead><tr><th>When</th><th>Restaurant</th><th>Product</th><th>From</th><th>Note</th><th>Status</th><th class="right">Mark-up</th><th></th></tr></thead><tbody>
       ${rows.map((r) => `<tr><td>${fmtDT(r.created_at)}</td><td>${esc(r.restaurant?.name)}<div class="small muted">${esc(r.by?.full_name || "")}</div></td>
-        <td>${r.product ? esc(r.product.name) : `<i>New item:</i> ${esc(r.item_name)}`}</td><td class="small">${esc(r.note || "")}</td>
+        <td>${r.product ? esc(r.product.name) : `<i>New item:</i> ${esc(r.item_name)}`}</td>
+        <td>${r.source === "slideshow" ? '<span class="badge info">Slideshow enquiry</span>' : '<span class="badge">Browse</span>'}</td><td class="small">${esc(r.note || "")}</td>
         <td><span class="badge ${r.status === "approved" ? "ok" : r.status === "rejected" ? "danger" : "warn"}">${r.status}</span>${r.admin_note ? `<div class="small muted">${esc(r.admin_note)}</div>` : ""}</td>
         <td class="right">${pct(r.margin_pct)}</td>
-        <td class="right">${r.status === "pending" ? `<button class="btn sm primary" data-rev="${r.id}">Review</button>` : ""}</td></tr>`).join("") || '<tr><td colspan="7" class="empty">Nothing here.</td></tr>'}
+        <td class="right">${r.status === "pending" ? `<button class="btn sm primary" data-rev="${r.id}">Review</button>` : ""}</td></tr>`).join("") || '<tr><td colspan="8" class="empty">Nothing here.</td></tr>'}
       </tbody></table></div>`;
     $$("[data-rev]", el).forEach((b) => (b.onclick = () => reviewRequest(rows.find((x) => x.id === b.dataset.rev), L, load)));
   };
@@ -961,37 +962,115 @@ async function reviewRequest(r, L, reload) {
 
 // ====================================================================== SHOWCASE
 export async function showcase(el) {
-  const [rows, prods] = await Promise.all([
-    q(sb.from("boh_featured").select("*, product:boh_products(name,image_url)").order("created_at", { ascending: false })),
-    q(sb.from("boh_products").select("id,name,image_url,description").eq("active", true).order("name")),
+  const [rows, prods, enq, reqs] = await Promise.all([
+    q(sb.from("boh_featured").select("*, product:boh_products(name,image_url,description,unit)").order("created_at", { ascending: false })),
+    q(sb.from("boh_products").select("id,name,image_url,description,unit").eq("active", true).order("name")),
+    q(sb.from("boh_enquiries").select("featured_id")),
+    q(sb.from("boh_product_requests").select("featured_id").eq("source", "slideshow")),
   ]);
+  const cnt = (arr, id) => arr.filter((x) => x.featured_id === id).length;
   el.innerHTML = `
-    <div class="page-head"><div><h1>Showcase slideshow</h1><div class="muted">Shown to every restaurant at the top of their home screen, in random order. Clicking opens product details with a “Request product” button.</div></div>
+    <div class="page-head"><div><h1>Showcase slideshow</h1><div class="muted">Shown to every restaurant at the top of their home screen, in random order. “Know more” opens the details below with an Enquire button.
+      Enquiries on a slide linked to a catalogue product go to <a href="#/requests">Product requests</a>; others go to <a href="#/enquiries">Enquiries</a>.</div></div>
       <button class="btn primary" id="add">+ Add slide</button></div>
     <div class="prod-grid">${rows.map((f) => `<div class="prod">
       <div class="img" style="background-image:url('${esc(f.image_url || f.product?.image_url || "")}')">${f.image_url || f.product?.image_url ? "" : "🖼️"}</div>
-      <div class="b"><b>${esc(f.title)}</b><div class="small muted">${esc(f.caption || "")}</div><div class="small">${f.product ? "Product: " + esc(f.product.name) : "No product linked"}</div>
-        <div class="row"><label class="row" style="margin:0"><input type="checkbox" data-act="${f.id}" ${f.active ? "checked" : ""}> Live</label><span class="grow"></span><button class="btn sm danger" data-del="${f.id}">Delete</button></div></div></div>`).join("") || '<div class="empty">No slides yet.</div>'}</div>`;
+      <div class="b"><b>${esc(f.title)}</b>${f.price_label ? `<div style="color:var(--brand);font-weight:650">${esc(f.price_label)}</div>` : ""}
+        <div class="small muted">${esc(f.caption || "")}</div>
+        <div class="small">${f.product ? "Product: " + esc(f.product.name) : "No product linked"}</div>
+        <div class="small">${f.product ? `${cnt(reqs, f.id)} request(s)` : `${cnt(enq, f.id)} enquiry(ies)`}</div>
+        <div class="row"><label class="row" style="margin:0"><input type="checkbox" data-act="${f.id}" ${f.active ? "checked" : ""}> Live</label><span class="grow"></span>
+          <button class="btn sm" data-ed="${f.id}">Edit</button><button class="btn sm danger" data-del="${f.id}">Delete</button></div></div></div>`).join("") || '<div class="empty">No slides yet.</div>'}</div>`;
   $$("[data-act]", el).forEach((i) => (i.onchange = async () => { await q(sb.from("boh_featured").update({ active: i.checked }).eq("id", i.dataset.act)); toast("Updated"); }));
   $$("[data-del]", el).forEach((b) => (b.onclick = async () => { if (await confirmBox("Delete this slide?")) { await q(sb.from("boh_featured").delete().eq("id", b.dataset.del)); showcase(el); } }));
-  $("#add").onclick = () => {
+  $("#add").onclick = () => slideEditor(null);
+  $$("[data-ed]", el).forEach((b) => (b.onclick = () => slideEditor(rows.find((x) => x.id === b.dataset.ed))));
+
+  function slideEditor(f) {
+    f = f || { gallery: [], active: true };
+    let banner = f.image_url || null;
+    let gallery = [...(f.gallery || [])];
     const m = modal({
-      title: "Add showcase slide",
-      body: `<div class="field"><label>Product</label><select id="fp"><option value="">— none —</option>${prods.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select></div>
-        <div class="field"><label>Headline *</label><input id="ftl"></div>
-        <div class="field"><label>Caption</label><input id="fc"></div>
-        <div class="field"><label>Banner image (wide images look best; falls back to the product image)</label><input type="file" id="fi" accept="image/*"><div id="fprev"></div></div>`,
-      footer: `<button class="btn primary" id="go">Add slide</button>`,
+      wide: true,
+      title: f.id ? `Edit slide — ${f.title}` : "Add showcase slide",
+      body: `<div class="grid c2" style="align-items:start"><div>
+          <div class="field"><label>Catalogue product (optional — enquiries then become product requests)</label><select id="fp"><option value="">— none (new / non-catalogue item) —</option>${prods.map((p) => `<option value="${p.id}" ${p.id === f.product_id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></div>
+          <div class="field"><label>Headline *</label><input id="ftl" value="${esc(f.title || "")}"></div>
+          <div class="field"><label>Short caption (on the slide)</label><input id="fc" value="${esc(f.caption || "")}"></div>
+          <div class="field"><label>Price shown (free text)</label><input id="fpr" value="${esc(f.price_label || "")}" placeholder="e.g. ₹120 / pack of 50 · From ₹2,500 · Intro offer ₹99"></div>
+          <div class="field"><label>Full description (in “Know more”)</label><textarea id="fd" rows="5">${esc(f.details || "")}</textarea></div>
+          <div class="field"><label>Highlights (one per line)</label><textarea id="fh" rows="4" placeholder="Food-grade material&#10;Pack of 50&#10;Next-day delivery">${esc(f.highlights || "")}</textarea></div>
+          <div class="field"><label>More information link (optional)</label><input id="fl" value="${esc(f.more_link || "")}" placeholder="https://…"></div>
+        </div><div>
+          <div class="field"><label>Banner image (wide works best; falls back to the product image)</label><input type="file" id="fi" accept="image/*"><div id="fprev"></div></div>
+          <div class="field"><label>More photos (shown in “Know more”)</label><input type="file" id="fg" accept="image/*" multiple><div id="gprev" class="row" style="margin-top:.4rem"></div></div>
+        </div></div>`,
+      footer: `<button class="btn primary" id="go">${f.id ? "Save slide" : "Add slide"}</button>`,
     });
-    let url = null;
-    $("#fp", m.el).onchange = (e) => { const p = prods.find((x) => x.id === e.target.value); if (p && !$("#ftl", m.el).value) $("#ftl", m.el).value = p.name; if (p && !$("#fc", m.el).value) $("#fc", m.el).value = p.description || ""; };
-    $("#fi", m.el).onchange = async (e) => { url = await uploadImage(e.target.files[0], "showcase"); $("#fprev", m.el).innerHTML = `<img src="${esc(url)}" style="max-height:120px;border-radius:8px;margin-top:.4rem">`; };
-    $("#go", m.el).onclick = async () => {
-      if (!$("#ftl", m.el).value) return toast("Headline is required", true);
-      await q(sb.from("boh_featured").insert({ product_id: $("#fp", m.el).value || null, title: $("#ftl", m.el).value, caption: $("#fc", m.el).value || null, image_url: url }));
-      toast("Slide added"); m.close(); showcase(el);
+    const drawBanner = () => ($("#fprev", m.el).innerHTML = banner ? `<img src="${esc(banner)}" style="max-height:120px;border-radius:8px;margin-top:.4rem"> <button class="btn sm" id="rmb" type="button">Remove</button>` : "");
+    const drawGallery = () => {
+      $("#gprev", m.el).innerHTML = gallery.map((u, i) => `<div style="position:relative"><img src="${esc(u)}" style="width:72px;height:72px;object-fit:cover;border-radius:6px"><button class="btn sm" data-rg="${i}" type="button" style="position:absolute;top:2px;right:2px;padding:0 .3rem">×</button></div>`).join("");
+      $$("[data-rg]", m.el).forEach((b) => (b.onclick = () => { gallery.splice(Number(b.dataset.rg), 1); drawGallery(); }));
     };
-  };
+    drawBanner(); drawGallery();
+    $("#fprev", m.el).addEventListener("click", (e) => { if (e.target.id === "rmb") { banner = null; drawBanner(); } });
+    const busy = (on) => ($("#go", m.el).disabled = on);
+    $("#fp", m.el).onchange = (e) => {
+      const p = prods.find((x) => x.id === e.target.value);
+      if (p && !$("#ftl", m.el).value) $("#ftl", m.el).value = p.name;
+      if (p && !$("#fd", m.el).value) $("#fd", m.el).value = p.description || "";
+    };
+    $("#fi", m.el).onchange = async (e) => { if (!e.target.files[0]) return; busy(true); try { banner = await uploadImage(e.target.files[0], "showcase"); drawBanner(); } finally { busy(false); } };
+    $("#fg", m.el).onchange = async (e) => {
+      busy(true);
+      try { for (const file of e.target.files) gallery.push(await uploadImage(file, "showcase")); drawGallery(); } finally { busy(false); }
+    };
+    $("#go", m.el).onclick = async () => {
+      const title = $("#ftl", m.el).value.trim();
+      if (!title) return toast("Headline is required", true);
+      const rec = { product_id: $("#fp", m.el).value || null, title, caption: $("#fc", m.el).value.trim() || null, price_label: $("#fpr", m.el).value.trim() || null,
+        details: $("#fd", m.el).value.trim() || null, highlights: $("#fh", m.el).value.trim() || null, more_link: $("#fl", m.el).value.trim() || null,
+        image_url: banner, gallery };
+      if (f.id) await q(sb.from("boh_featured").update(rec).eq("id", f.id)); else await q(sb.from("boh_featured").insert(rec));
+      toast(f.id ? "Slide saved" : "Slide added"); m.close(); showcase(el);
+    };
+  }
+}
+
+// ====================================================================== ENQUIRIES (from the slideshow, non-catalogue items)
+const ENQ_STATUS = { new: ["New", "warn"], interested: ["Interested", "info"], dropped: ["Dropped interest", "danger"], converted: ["Converted", "ok"] };
+export async function enquiries(el) {
+  const [rows, rests] = await Promise.all([
+    q(sb.from("boh_enquiries").select("*, restaurant:boh_restaurants(name,phone), by:boh_users!boh_enquiries_created_by_fkey(full_name,phone), upd:boh_users!boh_enquiries_updated_by_fkey(full_name), slide:boh_featured(title,price_label)").order("created_at", { ascending: false })),
+    q(sb.from("boh_restaurants").select("id,name").order("name")),
+  ]);
+  const count = (k) => rows.filter((r) => r.status === k).length;
+  el.innerHTML = `
+    <div class="page-head"><div><h1>Enquiries</h1><div class="muted">Who enquired about what from the slideshow. Enquiries about catalogue products appear under <a href="#/requests">Product requests</a> instead.</div></div>
+      <button class="btn" id="csv">⬇ Export CSV</button></div>
+    <div class="grid k4" style="margin-bottom:1rem">${Object.entries(ENQ_STATUS).map(([k, [l]]) => `<div class="card stat"><div class="l">${l}</div><div class="v">${count(k)}</div></div>`).join("")}</div>
+    <div class="row" style="margin-bottom:.75rem">
+      <select id="fs" style="max-width:200px"><option value="">All statuses</option>${Object.entries(ENQ_STATUS).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join("")}</select>
+      <select id="fr" style="max-width:240px"><option value="">All restaurants</option>${rests.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("")}</select>
+      <input id="fq" placeholder="Search item…" style="max-width:240px"></div>
+    <div class="table-wrap"><table><thead><tr><th>When</th><th>Restaurant / person</th><th>Enquired about</th><th>Message</th><th>Qty</th><th>Status</th><th>Our note</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr data-s="${r.status}" data-r="${r.restaurant_id}" data-q="${esc(r.subject.toLowerCase())}">
+      <td class="small">${fmtDT(r.created_at)}</td>
+      <td><b>${esc(r.restaurant?.name)}</b><div class="small">${esc(r.by?.full_name || "")} ${r.by?.phone ? "· " + telLinks([r.by.phone]) : r.restaurant?.phone ? "· " + telLinks([r.restaurant.phone]) : ""}</div></td>
+      <td><b>${esc(r.subject)}</b>${r.slide?.price_label ? `<div class="small muted">${esc(r.slide.price_label)}</div>` : ""}</td>
+      <td class="small">${esc(r.message || "")}</td><td class="small">${esc(r.quantity || "")}</td>
+      <td><select data-st="${r.id}" style="min-width:150px">${Object.entries(ENQ_STATUS).map(([k, [l]]) => `<option value="${k}" ${k === r.status ? "selected" : ""}>${l}</option>`).join("")}</select>
+        ${r.updated_at ? `<div class="small muted">${esc(r.upd?.full_name || "")} · ${fmtDT(r.updated_at)}</div>` : ""}</td>
+      <td><input data-note="${r.id}" value="${esc(r.admin_note || "")}" placeholder="Add note…" style="min-width:160px"></td></tr>`).join("") || '<tr><td colspan="7" class="empty">No enquiries yet.</td></tr>'}
+    </tbody></table></div>`;
+  const filter = () => $$("tr[data-s]", el).forEach((tr) => tr.classList.toggle("hidden",
+    !((!$("#fs").value || tr.dataset.s === $("#fs").value) && (!$("#fr").value || tr.dataset.r === $("#fr").value) && tr.dataset.q.includes($("#fq").value.toLowerCase()))));
+  $("#fs").onchange = filter; $("#fr").onchange = filter; $("#fq").oninput = filter;
+  const save = async (id, patch) => { await q(sb.from("boh_enquiries").update({ ...patch, updated_by: state.me.id, updated_at: new Date().toISOString() }).eq("id", id)); };
+  $$("[data-st]", el).forEach((i) => (i.onchange = async () => { await save(i.dataset.st, { status: i.value }); toast(`Marked ${ENQ_STATUS[i.value][0]}`); refreshCounts(); enquiries(el); }));
+  $$("[data-note]", el).forEach((i) => (i.onchange = async () => { await save(i.dataset.note, { admin_note: i.value.trim() || null }); toast("Note saved"); }));
+  $("#csv").onclick = () => downloadCSV("enquiries.csv", rows.map((r) => ({ Date: fmtDT(r.created_at), Restaurant: r.restaurant?.name, Person: r.by?.full_name, Phone: r.by?.phone || r.restaurant?.phone || "",
+    Item: r.subject, Price: r.slide?.price_label || "", Message: r.message || "", Quantity: r.quantity || "", Status: ENQ_STATUS[r.status][0], Note: r.admin_note || "" })));
 }
 
 // ====================================================================== COMPLAINTS (admin + coordinator)
@@ -1089,12 +1168,30 @@ export async function settings(el) {
       <div class="form-grid">
         <div class="field"><label>Company name</label><input name="company_name" value="${esc(s.company_name)}"></div>
         <div class="field"><label>Support phone (shown to restaurants)</label><input name="support_phone" value="${esc(s.support_phone || "")}"></div>
-        <div class="field" style="grid-column:1/-1"><label>Payment instructions shown to restaurants (UPI ID, bank account, QR link…)</label><textarea name="payment_instructions" rows="3" placeholder="UPI: backofhouse@okbank&#10;Bank: XYZ Bank, A/c 1234567890, IFSC XYZB0000123">${esc(s.payment_instructions || "")}</textarea></div>
         <div class="field"><label>Order cut-off for next-day delivery</label><input name="order_cutoff" type="time" value="${s.order_cutoff.slice(0, 5)}"></div>
         <div class="field"><label>Working day starts</label><input name="work_start" type="time" value="${s.work_start.slice(0, 5)}"></div>
         <div class="field"><label>Working day ends</label><input name="work_end" type="time" value="${s.work_end.slice(0, 5)}"></div>
       </div>
       <div class="field"><label>Working days</label><div class="row">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d, i) => `<label class="row" style="margin:0;font-weight:400"><input type="checkbox" data-day="${i + 1}" ${s.work_days.includes(i + 1) ? "checked" : ""}> ${d}</label>`).join("")}</div></div>
+      <h3>Payment details shown to restaurants</h3>
+      <p class="small muted">Restaurants see these when they tap <b>Pay now</b>. Fill in the QR / UPI option, the bank account, or both.</p>
+      <div class="grid c2" style="align-items:start">
+        <div class="card" style="padding:.8rem"><b>Option 1 — QR code / UPI</b>
+          <div class="field" style="margin-top:.5rem"><label>QR code image</label><input type="file" id="qrfile" accept="image/*">
+            <div id="qrprev" style="margin-top:.4rem"></div><input type="hidden" name="pay_qr_url" value="${esc(s.pay_qr_url || "")}"></div>
+          <div class="field"><label>UPI ID</label><input name="pay_upi_id" value="${esc(s.pay_upi_id || "")}" placeholder="backofhouse@okbank"></div>
+        </div>
+        <div class="card" style="padding:.8rem;margin-top:0"><b>Option 2 — Bank transfer</b>
+          <div class="field" style="margin-top:.5rem"><label>Account holder name</label><input name="bank_account_name" value="${esc(s.bank_account_name || "")}"></div>
+          <div class="field"><label>Account number</label><input name="bank_account_no" value="${esc(s.bank_account_no || "")}"></div>
+          <div class="form-grid">
+            <div class="field"><label>IFSC</label><input name="bank_ifsc" value="${esc(s.bank_ifsc || "")}" style="text-transform:uppercase"></div>
+            <div class="field"><label>Bank name</label><input name="bank_name" value="${esc(s.bank_name || "")}"></div>
+          </div>
+          <div class="field"><label>Branch</label><input name="bank_branch" value="${esc(s.bank_branch || "")}"></div>
+        </div>
+      </div>
+      <div class="field"><label>Other payment notes (optional, e.g. "Cheques in favour of …")</label><textarea name="payment_instructions" rows="2">${esc(s.payment_instructions || "")}</textarea></div>
       <h3>SLA (working hours)</h3>
       <div class="form-grid">
         <div class="field"><label>Admin allocates order within</label><input type="number" step="0.5" name="sla_allocate_hrs" value="${s.sla_allocate_hrs}"></div>
@@ -1106,8 +1203,19 @@ export async function settings(el) {
       </div>
       <button class="btn primary" id="save">Save settings</button>
     </div>`;
+  const qr = () => $('[name="pay_qr_url"]').value;
+  const drawQr = () => ($("#qrprev").innerHTML = qr() ? `<img src="${esc(qr())}" style="width:160px;height:160px;object-fit:contain;border:1px solid var(--line);border-radius:8px;background:#fff"> <button class="btn sm" id="qrrm" type="button">Remove</button>` : '<span class="small muted">No QR uploaded</span>');
+  drawQr();
+  $("#qrprev").addEventListener("click", (e) => { if (e.target.id === "qrrm") { $('[name="pay_qr_url"]').value = ""; drawQr(); } });
+  $("#qrfile").onchange = async (e) => {
+    if (!e.target.files[0]) return;
+    $("#save").disabled = true;
+    try { $('[name="pay_qr_url"]').value = await uploadImage(e.target.files[0], "payment"); drawQr(); toast("QR uploaded — click Save settings"); }
+    finally { $("#save").disabled = false; }
+  };
   $("#save").onclick = async () => {
     const f = formData($("#sf"));
+    if (f.bank_ifsc) f.bank_ifsc = f.bank_ifsc.toUpperCase();
     f.work_days = $$("[data-day]:checked", el).map((i) => Number(i.dataset.day));
     f.updated_at = new Date().toISOString();
     const row = await q(sb.from("boh_settings").update(f).eq("id", 1).select().single());

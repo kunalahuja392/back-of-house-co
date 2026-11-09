@@ -1,4 +1,4 @@
-import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks, payBadge, PAY_MODE } from "./lib.js?v=11";
+import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks, payBadge, PAY_MODE } from "./lib.js?v=13";
 
 const CART_KEY = () => "boh_cart_" + state.me.restaurant_id;
 const loadCart = () => { try { return JSON.parse(localStorage.getItem(CART_KEY()) || "{}"); } catch { return {}; } };
@@ -68,7 +68,9 @@ function renderSlides(box, slides, cat) {
   box.className = "slides";
   box.innerHTML = slides.map((s, i) => `<div class="slide ${i === 0 ? "on" : ""}" data-i="${i}">
       ${s.image_url || s.product?.image_url ? `<img src="${esc(s.image_url || s.product.image_url)}" alt="">` : ""}
-      <div class="cap"><div class="small" style="opacity:.8">NEW FROM BACK OF HOUSE CO</div><h2>${esc(s.title)}</h2><div>${esc(s.caption || "")}</div></div></div>`).join("")
+      <div class="cap"><div class="small" style="opacity:.8">NEW FROM BACK OF HOUSE CO</div><h2>${esc(s.title)}</h2>
+        <div>${esc(s.caption || "")}${s.price_label ? ` <b class="slide-price">${esc(s.price_label)}</b>` : ""}</div>
+        <button class="btn sm accent" style="margin-top:.6rem">Know more →</button></div></div>`).join("")
     + `<div class="dots">${slides.map((_, i) => `<span class="${i === 0 ? "on" : ""}"></span>`).join("")}</div>`;
   let cur = 0;
   const show = (n) => {
@@ -79,15 +81,58 @@ function renderSlides(box, slides, cat) {
   if (slides.length > 1) {
     const timer = setInterval(() => {
       if (!document.body.contains(box)) return clearInterval(timer);
+      if (document.querySelector(".modal-bg")) return; // pause while details are open
       let n = Math.floor(Math.random() * slides.length);
       if (n === cur) n = (n + 1) % slides.length;
       show(n);
     }, 5000);
   }
-  box.onclick = () => {
-    const s = slides[cur];
-    if (s.product) productDetail(s.product, cat, s);
-  };
+  box.onclick = () => slideDetail(slides[cur], cat);
+}
+
+// "Know more" for a showcase slide, with an Enquire button
+async function slideDetail(s, cat) {
+  const p = s.product;
+  const onList = p && cat.find((c) => c.product_id === p.id);
+  const pending = p ? await q(sb.from("boh_product_requests").select("id").eq("product_id", p.id).eq("status", "pending")) : [];
+  const imgs = [s.image_url || p?.image_url, ...(s.gallery || [])].filter(Boolean);
+  const lines = (s.highlights || "").split("\n").map((x) => x.trim()).filter(Boolean);
+  const m = modal({
+    wide: true,
+    title: s.title,
+    body: `<div class="${imgs.length ? "grid c2" : ""}" style="align-items:start">
+        <div class="${imgs.length ? "" : "hidden"}">${imgs.length ? `<img id="bigimg" src="${esc(imgs[0])}" style="width:100%;max-height:340px;object-fit:cover;border-radius:10px">
+          ${imgs.length > 1 ? `<div class="row" style="margin-top:.5rem">${imgs.map((u, i) => `<img data-thumb="${esc(u)}" src="${esc(u)}" style="width:64px;height:64px;object-fit:cover;border-radius:6px;cursor:pointer;${i === 0 ? "outline:2px solid var(--brand-2)" : ""}">`).join("")}</div>` : ""}` : ""}</div>
+        <div>
+          ${s.price_label ? `<div style="font-size:1.4rem;font-weight:750;color:var(--brand)">${esc(s.price_label)}</div>` : ""}
+          ${s.caption ? `<p class="muted">${esc(s.caption)}</p>` : ""}
+          ${s.details ? `<p style="white-space:pre-wrap">${esc(s.details)}</p>` : p?.description ? `<p>${esc(p.description)}</p>` : ""}
+          ${lines.length ? `<ul>${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
+          ${p ? `<div class="row small muted">${p.brand ? `<span class="badge">${esc(p.brand)}</span>` : ""}<span class="badge">per ${esc(p.unit || "")}</span></div>` : ""}
+          ${s.more_link ? `<p><a href="${esc(s.more_link)}" target="_blank" rel="noopener">More information ↗</a></p>` : ""}
+          <hr style="border:0;border-top:1px solid var(--line);margin:1rem 0">
+          ${onList ? `<div class="notice green">This is already on your ordering list at ${money(onList.price)} / ${esc(onList.unit)}.</div>`
+            : pending.length ? `<div class="notice">You've already asked about this — our team will get back to you. You can add more details below.</div>` : ""}
+          ${onList ? "" : `<h3>Enquire about this</h3>
+            <div class="field"><label>Your question / requirement</label><textarea id="em" rows="3" placeholder="e.g. Need samples, monthly requirement, preferred brand…"></textarea></div>
+            <div class="field"><label>Expected quantity (optional)</label><input id="eq" placeholder="e.g. 20 packs a week"></div>`}
+        </div></div>`,
+    footer: onList ? `<a class="btn primary" href="#/order">Order now</a>` : `<button class="btn accent" id="enq">Send enquiry</button>`,
+  });
+  $$("[data-thumb]", m.el).forEach((t) => (t.onclick = () => {
+    $("#bigimg", m.el).src = t.dataset.thumb;
+    $$("[data-thumb]", m.el).forEach((x) => (x.style.outline = x === t ? "2px solid var(--brand-2)" : ""));
+  }));
+  $("a.btn", m.el)?.addEventListener("click", m.close);
+  $("#enq", m.el)?.addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      const res = await q(sb.rpc("boh_enquire", { p_featured: s.id, p_message: $("#em", m.el).value, p_quantity: $("#eq", m.el).value }));
+      toast({ request: "Request sent — our team will approve and add it to your list", request_updated: "Added to your existing request",
+        enquiry: "Enquiry sent — our team will contact you", on_list: "Already on your ordering list" }[res] || "Sent");
+      m.close();
+    } catch { e.target.disabled = false; }
+  });
 }
 
 async function productDetail(p, cat, slide) {
@@ -228,28 +273,48 @@ function unpaidBanner(orders) {
   return `<div class="notice" style="background:#fbeeed;border-color:#efc5c1;color:#8a2a23">💳 <b>${money(due.reduce((a, o) => a + Number(o.total), 0))} unpaid</b> across ${due.length} order${due.length > 1 ? "s" : ""}${rej ? ` (${rej} payment${rej > 1 ? "s" : ""} rejected — please check)` : ""}. Please pay and tap <b>Pay now → I've already paid</b>.</div>`;
 }
 
+const copyBtn = (v) => v ? ` <button class="btn sm" type="button" data-copy="${esc(v)}" title="Copy">⧉</button>` : "";
 function payInstructions() {
-  const t = (state.settings.payment_instructions || "").trim();
-  return t ? `<div class="card" style="padding:.75rem;white-space:pre-wrap">${esc(t)}</div>`
-    : `<div class="muted">Please contact your coordinator or ${state.settings.support_phone ? "call " + esc(state.settings.support_phone) : "our team"} for payment details.</div>`;
+  const st = state.settings;
+  const hasQr = st.pay_qr_url || st.pay_upi_id;
+  const hasBank = st.bank_account_no;
+  const qr = hasQr ? `<div class="card paybox" style="padding:.8rem;margin-top:0"><b>📱 Scan QR / pay by UPI</b>
+      ${st.pay_qr_url ? `<div style="text-align:center;margin:.6rem 0"><img src="${esc(st.pay_qr_url)}" style="width:200px;height:200px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:8px"></div>` : ""}
+      ${st.pay_upi_id ? `<div class="small">UPI ID: <b>${esc(st.pay_upi_id)}</b>${copyBtn(st.pay_upi_id)}</div>` : ""}</div>` : "";
+  const row = (l, v) => v ? `<tr><td class="muted">${l}</td><td><b>${esc(v)}</b>${copyBtn(v)}</td></tr>` : "";
+  const bank = hasBank ? `<div class="card paybox" style="padding:.8rem;margin-top:0"><b>🏦 Bank transfer (NEFT / IMPS / RTGS)</b>
+      <table class="small" style="margin-top:.4rem"><tbody>${row("Account name", st.bank_account_name)}${row("Account no.", st.bank_account_no)}${row("IFSC", st.bank_ifsc)}${row("Bank", st.bank_name)}${row("Branch", st.bank_branch)}</tbody></table></div>` : "";
+  const notes = (st.payment_instructions || "").trim() ? `<div class="small" style="white-space:pre-wrap;margin-top:.6rem">${esc(st.payment_instructions)}</div>` : "";
+  if (!qr && !bank && !notes) return `<div class="muted">Please contact your coordinator or ${st.support_phone ? "call " + esc(st.support_phone) : "our team"} for payment details.</div>`;
+  return `<div class="grid ${qr && bank ? "c2" : ""}" style="align-items:start">${qr}${bank}</div>${notes}`;
+}
+function bindCopy(root) {
+  $$("[data-copy]", root).forEach((b) => (b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast("Copied"); } catch { toast(b.dataset.copy); }
+  }));
 }
 
 // "Pay now": shows how to pay, and lets the restaurant say "I've already paid" with a reference
 export function payNow(o, done) {
   const m = modal({
+    wide: true,
     title: `Pay for order #${o.order_no} — ${money(o.total)}`,
     body: `${o.payment_rejected_note ? `<div class="notice" style="background:#fbeeed;border-color:#efc5c1;color:#8a2a23"><b>Your last payment was not approved:</b> ${esc(o.payment_rejected_note)}</div>` : ""}
       <h3>How to pay</h3>${payInstructions()}
       <h3 style="margin-top:1rem">Already paid?</h3>
-      <p class="small muted">Enter the UPI / bank transaction ID (UTR), or cheque number. Our team will check and confirm it.</p>
-      <div class="field"><label>Payment reference *</label><input id="ref" placeholder="e.g. UTR 4123 5678 9012"></div>`,
+      <p class="small muted">Tell us how you paid and the transaction ID (UTR) or cheque number. Our team will check and confirm it.</p>
+      <div class="form-grid">
+        <div class="field"><label>Paid via *</label><select id="pmeth"><option>UPI / QR code</option><option>Bank transfer</option><option>Cheque</option><option>Cash</option><option>Other</option></select></div>
+        <div class="field"><label>Payment reference *</label><input id="ref" placeholder="e.g. UTR 4123 5678 9012"></div>
+      </div>`,
     footer: `<button class="btn" id="later">Pay later</button><button class="btn primary" id="paid">I've already paid</button>`,
   });
+  bindCopy(m.el);
   $("#later", m.el).onclick = m.close;
   $("#paid", m.el).onclick = async () => {
     const ref = $("#ref", m.el).value.trim();
     if (!ref) return toast("Enter the payment reference", true);
-    await q(sb.rpc("boh_claim_payment", { p_order: o.id, p_ref: ref }));
+    await q(sb.rpc("boh_claim_payment", { p_order: o.id, p_ref: ref, p_method: $("#pmeth", m.el).value }));
     toast("Thanks! Payment is under approval."); m.close(); done?.();
   };
 }

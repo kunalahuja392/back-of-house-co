@@ -162,3 +162,4 @@ a.btn { text-decoration: none; }
 .pwbox code { font-size: 12px; background: #f3efe8; padding: .1rem .35rem; border-radius: 4px; }
 .paymode { display: flex; gap: .5rem; align-items: flex-start; border: 1px solid var(--line); border-radius: 10px; padding: .6rem .8rem; cursor: pointer; flex: 1; min-width: 200px; margin: 0; color: var(--ink); font-weight: 400; }
 .paymode:has(input:checked) { border-color: var(--brand-2); background: #f0f7f3; }
+.slide-price { background: var(--accent); color: #fff; padding: .1rem .5rem; border-radius: 6px; margin-left: .3rem; white-space: nowrap; }

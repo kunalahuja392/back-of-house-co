@@ -1,8 +1,8 @@
-import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=11";
-import * as admin from "./admin.js?v=11";
-import * as reports from "./reports.js?v=11";
-import * as coord from "./coordinator.js?v=11";
-import * as cust from "./customer.js?v=11";
+import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=13";
+import * as admin from "./admin.js?v=13";
+import * as reports from "./reports.js?v=13";
+import * as coord from "./coordinator.js?v=13";
+import * as cust from "./customer.js?v=13";
 
 const root = document.getElementById("root");
 
@@ -13,6 +13,7 @@ const MENUS = {
     ["orders", "🧾", "Orders & allocation", admin.orders],
     ["tasks", "✅", "My assigned orders", coord.tasks],
     ["requests", "🙋", "Product requests", admin.requests],
+    ["enquiries", "💬", "Enquiries", admin.enquiries],
     ["complaints", "⚠️", "Complaints", admin.complaints],
     ["Catalogue"],
     ["restaurants", "🍽️", "Restaurants", admin.restaurants],
@@ -179,13 +180,14 @@ function shell() {
 
 async function refreshCounts() {
   if (!["admin", "super_admin"].includes(state.me.role)) return;
-  const [o, r, c] = await Promise.all([
+  const [o, r, c, e] = await Promise.all([
     sb.from("boh_orders").select("id", { count: "exact", head: true }).neq("status", "cancelled").or("status.eq.placed,payment_status.eq.under_review"),
     sb.from("boh_product_requests").select("id", { count: "exact", head: true }).eq("status", "pending"),
     sb.from("boh_complaints").select("id", { count: "exact", head: true }).neq("status", "resolved"),
+    sb.from("boh_enquiries").select("id", { count: "exact", head: true }).eq("status", "new"),
   ]);
   const set = (k, n) => { const el = $(`[data-count="${k}"]`); if (el) { el.textContent = n; el.classList.toggle("hidden", !n); } };
-  set("orders", o.count); set("requests", r.count); set("complaints", c.count);
+  set("orders", o.count); set("requests", r.count); set("complaints", c.count); set("enquiries", e.count);
 }
 window.bohRefreshCounts = refreshCounts;
 

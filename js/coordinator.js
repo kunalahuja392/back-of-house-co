@@ -1,5 +1,5 @@
-import { sb, state, $, $$, esc, money, fmtDT, fmtD, q, statusBadge, payBadge, PAY_MODE, dueText, allocSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON, toast, promptBox } from "./lib.js?v=11";
-import { orderModal, advanceAlloc, paymentButtons, bindPaymentButtons } from "./admin.js?v=11";
+import { sb, state, $, $$, esc, money, fmtDT, fmtD, q, statusBadge, payBadge, PAY_MODE, dueText, allocSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON, toast, promptBox } from "./lib.js?v=13";
+import { orderModal, advanceAlloc, paymentButtons, bindPaymentButtons } from "./admin.js?v=13";
 
 // each card = one category of one order allocated to me
 export async function tasks(el) {
@@ -27,7 +27,7 @@ export async function tasks(el) {
       orders.sort((x, y) => (y.payment_status === "under_review") - (x.payment_status === "under_review"));
       $("#list").innerHTML = orders.map((o) => `<div class="card"><div class="row between"><div><h2 style="margin:0">#${o.order_no} · ${esc(o.restaurant?.name)} · ${money(o.total)}</h2>
           <div class="small muted">${PAY_MODE[o.payment_mode] || ""} · ${o.delivered_at ? "Delivered " + fmtDT(o.delivered_at) : "Not delivered yet"} · 📞 ${telLinks([o.restaurant?.phone])}</div>
-          ${o.payment_status === "under_review" ? `<div class="small">Restaurant says paid · ref <b>${esc(o.payment_claim_ref)}</b> · ${fmtDT(o.payment_claimed_at)}</div>` : ""}
+          ${o.payment_status === "under_review" ? `<div class="small">Restaurant says paid${o.payment_claim_method ? " via " + esc(o.payment_claim_method) : ""} · ref <b>${esc(o.payment_claim_ref)}</b> · ${fmtDT(o.payment_claimed_at)}</div>` : ""}
           ${o.payment_status === "unpaid" && o.payment_rejected_note ? `<div class="small" style="color:var(--danger)">Last claim rejected: ${esc(o.payment_rejected_note)}</div>` : ""}</div>
           <div class="row">${payBadge(o)} <button class="btn sm" data-open="${o.id}">Open</button> ${paymentButtons(o)}</div></div></div>`).join("") || `<div class="card empty">No payments to collect or verify.</div>`;
       bindPaymentButtons($("#list"), orders, load);
