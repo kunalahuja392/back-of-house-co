@@ -2,7 +2,7 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, todayIST, daysAgoIST, downloadCSV, promptBox,
-} from "./lib.js?v=7";
+} from "./lib.js?v=8";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -34,6 +34,17 @@ function bindReveal(root) {
 }
 
 const ORDER_SELECT = "*, allocs:boh_order_allocations(*)";
+
+// fixed price rules: never below the cheapest active vendor; confirm when profit is under 10%
+async function okFixedPrice(price, cost) {
+  if (price == null) return true;
+  if (!(price > 0)) { toast("Fixed price must be more than 0", true); return false; }
+  if (cost == null) return true;
+  if (price < cost) { toast(`₹${price} is below the lowest active vendor rate ₹${cost}. Fixed price not saved.`, true); return false; }
+  const margin = ((price / cost - 1) * 100);
+  if (margin < 10) return confirmBox(`Margin might be low: ₹${price} is only ${margin.toFixed(2)}% above the lowest vendor rate ₹${cost} (under 10%). Set this fixed price anyway?`);
+  return true;
+}
 
 // ====================================================================== DASHBOARD
 export async function dashboard(el) {
@@ -443,21 +454,30 @@ async function restaurantEditor(id, L, reload, startTab = 0) {
     body.innerHTML = `<div class="empty">Loading…</div>`;
     const rows = await q(sb.rpc("boh_restaurant_catalog", { p_restaurant: id }));
     body.innerHTML = `
-      <div class="row between" style="margin-bottom:.6rem"><div class="muted">${rows.length} products on this ordering list. Leave "override" blank to use the category mark-up.</div>
+      <div class="row between" style="margin-bottom:.6rem"><div class="muted">${rows.length} products on this ordering list. Set a mark-up override <b>or</b> a fixed price; leave both blank to use the category mark-up. A fixed price wins over any mark-up.</div>
         <input id="ls" placeholder="Filter…" style="max-width:240px"></div>
-      <div class="table-wrap"><table><thead><tr><th>Product</th><th>Category</th><th class="right">Best cost</th><th>Vendor</th><th class="right">Override %</th><th class="right">Effective</th><th class="right">Selling price</th><th>On list</th><th></th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Product</th><th>Category</th><th class="right">Best cost</th><th>Vendor</th><th class="right">Mark-up override %</th><th class="right">Fixed price ₹</th><th class="right">Margin</th><th class="right">Selling price</th><th>On list</th><th></th></tr></thead><tbody>
       ${rows.map((x) => `<tr data-n="${esc((x.product_name + " " + x.category_name).toLowerCase())}">
         <td>${esc(x.product_name)} <span class="small muted">/${esc(x.unit)}</span></td><td>${esc(x.category_name)} ${x.category_active ? "" : `<span class="badge danger">category off — hidden from restaurant</span> <button class="btn sm" data-caton="${x.category_id}">Switch on</button>`}</td>
         <td class="right">${x.cost == null ? '<span class="badge danger">No rate</span>' : money(x.cost)}</td><td class="small">${esc(x.vendor_name || "")}</td>
-        <td class="right"><input type="number" step="0.01" style="width:90px" data-ov="${x.rp_id}" value="${x.margin_override ?? ""}" placeholder="—"></td>
-        <td class="right">${pct(x.effective_margin)}</td><td class="right"><b>${money(x.price)}</b></td>
+        <td class="right"><input type="number" step="0.01" style="width:90px" data-ov="${x.rp_id}" value="${x.margin_override ?? ""}" placeholder="—" ${x.fixed_price != null ? 'disabled title="Clear the fixed price to use a mark-up"' : ""}></td>
+        <td class="right"><input type="number" step="0.01" min="0" style="width:100px" data-fp="${x.rp_id}" data-cost="${x.cost ?? ""}" value="${x.fixed_price ?? ""}" placeholder="—"></td>
+        <td class="right">${x.cost != null && x.price != null && Number(x.price) < Number(x.cost) ? '<span class="badge danger">Below cost!</span>' : `<span class="${x.effective_margin != null && x.effective_margin < 10 ? "badge warn" : ""}">${pct(x.effective_margin)}</span>`}</td>
+        <td class="right"><b>${money(x.price)}</b>${x.fixed_price != null ? ' <span class="badge info">fixed</span>' : ""}</td>
         <td><input type="checkbox" data-act="${x.rp_id}" ${x.rp_active ? "checked" : ""} title="Untick to hide from the restaurant"></td>
-        <td><button class="btn sm danger" data-del="${x.rp_id}">Remove</button></td></tr>`).join("") || `<tr><td colspan="9" class="empty">No products allocated yet — use “Add products”.</td></tr>`}
+        <td><button class="btn sm danger" data-del="${x.rp_id}">Remove</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty">No products allocated yet — use “Add products”.</td></tr>`}
       </tbody></table></div>`;
     $("#ls", body).oninput = (e) => $$("tr[data-n]", body).forEach((tr) => tr.classList.toggle("hidden", !tr.dataset.n.includes(e.target.value.toLowerCase())));
     $$("[data-ov]", body).forEach((i) => (i.onchange = async () => {
       await q(sb.from("boh_restaurant_products").update({ margin_override: i.value === "" ? null : Number(i.value) }).eq("id", i.dataset.ov));
       toast("Mark-up updated"); listTab();
+    }));
+    $$("[data-fp]", body).forEach((i) => (i.onchange = async () => {
+      const price = i.value === "" ? null : Number(i.value);
+      const cost = i.dataset.cost === "" ? null : Number(i.dataset.cost);
+      if (!(await okFixedPrice(price, cost))) { listTab(); return; }
+      try { await q(sb.from("boh_restaurant_products").update({ fixed_price: price }).eq("id", i.dataset.fp)); } catch { return listTab(); }
+      toast(price == null ? "Fixed price cleared — mark-up applies" : `Fixed price set to ${money(price)}`); listTab();
     }));
     $$("[data-act]", body).forEach((i) => (i.onchange = async () => { await q(sb.from("boh_restaurant_products").update({ active: i.checked }).eq("id", i.dataset.act)); toast("Updated"); }));
     $$("[data-del]", body).forEach((b) => (b.onclick = async () => { await q(sb.from("boh_restaurant_products").delete().eq("id", b.dataset.del)); listTab(); }));
@@ -676,9 +696,19 @@ async function productEditor(id, L, reload) {
     footer: `<button class="btn primary" id="save">Save product</button>`,
   });
   $("#img", m.el).onchange = async (e) => {
-    const url = await uploadImage(e.target.files[0], "products");
-    $('[name="image_url"]', m.el).value = url;
-    $("#imgp", m.el).innerHTML = `<img src="${esc(url)}" style="max-height:100px;border-radius:8px">`;
+    const file = e.target.files[0];
+    if (!file) return;
+    const save = $("#save", m.el);
+    save.disabled = true;
+    $("#imgp", m.el).innerHTML = `<span class="small muted">Uploading image…</span>`;
+    try {
+      const url = await uploadImage(file, "products");
+      $('[name="image_url"]', m.el).value = url;
+      $("#imgp", m.el).innerHTML = `<img src="${esc(url)}" style="max-height:100px;border-radius:8px">`;
+      if (id) { await q(sb.from("boh_products").update({ image_url: url }).eq("id", id)); toast("Image saved"); reload(); }
+      else toast("Image ready — click Save product");
+    } catch { $("#imgp", m.el).innerHTML = `<span class="small" style="color:var(--danger)">Upload failed — try again</span>`; }
+    save.disabled = false;
   };
   $("#save", m.el).onclick = async () => {
     const f = formData($("#pf", m.el));
@@ -857,16 +887,32 @@ async function reviewRequest(r, L, reload) {
     body: `<p>${r.product ? `Product: <b>${esc(r.product.name)}</b>` : `New item requested: <b>${esc(r.item_name)}</b> — link it to a catalogue product (add it under Products first if needed).`}</p>
       ${r.note ? `<p class="muted">“${esc(r.note)}”</p>` : ""}
       <div class="field"><label>Catalogue product</label><select id="pp">${r.product_id ? "" : '<option value="">— choose —</option>'}${prods.map((p) => `<option value="${p.id}" ${p.id === r.product_id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></div>
-      <div class="field"><label>Mark-up % for this restaurant</label><input type="number" step="0.01" id="mg" value="${suggest(r.product_id)}"></div>
+      <div class="form-grid">
+        <div class="field"><label>Mark-up % for this restaurant</label><input type="number" step="0.01" id="mg" value="${suggest(r.product_id)}"></div>
+        <div class="field"><label>…or fixed price ₹ (optional)</label><input type="number" step="0.01" min="0" id="fp" placeholder="—"></div>
+      </div>
+      <div class="small muted" id="costinfo"></div>
       <div class="field"><label>Note to restaurant (optional)</label><input id="nt"></div>`,
     footer: `<button class="btn danger" id="rej">Reject</button><button class="btn primary" id="ok">Approve & add to list</button>`,
   });
-  $("#pp", m.el).onchange = (e) => ($("#mg", m.el).value = suggest(e.target.value));
+  let cost = null;
+  const showCost = async (pid) => {
+    cost = null;
+    if (!pid) { $("#costinfo", m.el).textContent = ""; return; }
+    const b = await q(sb.from("boh_product_best_rate").select("rate,vendor_name").eq("product_id", pid).maybeSingle());
+    cost = b ? Number(b.rate) : null;
+    $("#costinfo", m.el).innerHTML = b ? `Lowest active vendor rate: <b>${money(b.rate)}</b> (${esc(b.vendor_name)}). Fixed price can't go below this.` : "No active vendor rate yet.";
+  };
+  showCost(r.product_id);
+  $("#pp", m.el).onchange = (e) => { $("#mg", m.el).value = suggest(e.target.value); showCost(e.target.value); };
   const go = async (approve) => {
     const pid = $("#pp", m.el).value;
     if (approve && !pid) return toast("Choose the catalogue product", true);
+    const fixed = $("#fp", m.el).value === "" ? null : Number($("#fp", m.el).value);
+    if (approve && !(await okFixedPrice(fixed, cost))) return;
     if (pid && pid !== r.product_id) await q(sb.from("boh_product_requests").update({ product_id: pid }).eq("id", r.id));
     await q(sb.rpc("boh_review_request", { p_request: r.id, p_approve: approve, p_margin: $("#mg", m.el).value === "" ? null : Number($("#mg", m.el).value), p_note: $("#nt", m.el).value || null }));
+    if (approve && fixed != null) await q(sb.from("boh_restaurant_products").update({ fixed_price: fixed }).eq("restaurant_id", r.restaurant_id).eq("product_id", pid));
     toast(approve ? "Approved — product added to their ordering list" : "Request rejected"); m.close(); reload(); refreshCounts();
   };
   $("#ok", m.el).onclick = () => go(true);

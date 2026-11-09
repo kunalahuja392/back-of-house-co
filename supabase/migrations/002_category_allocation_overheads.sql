@@ -362,3 +362,9 @@ begin
     on conflict (restaurant_id, category_id) do update set active = true;
   end if;
 end $$;
+
+-- fixed selling price per restaurant per product (see live migration "fixed_price_and_image_repair")
+alter table public.boh_restaurant_products add column if not exists fixed_price numeric(12,2);
+-- trigger boh_check_fixed_price blocks a fixed price below the lowest active vendor rate;
+-- boh_selling_price(restaurant, product) = fixed price, else best rate × (1 + mark-up);
+-- boh_my_catalog, boh_restaurant_catalog and boh_place_order use boh_selling_price.
