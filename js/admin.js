@@ -2,7 +2,7 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, todayIST, daysAgoIST, downloadCSV, promptBox,
-} from "./lib.js?v=8";
+} from "./lib.js?v=9";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -460,8 +460,9 @@ async function restaurantEditor(id, L, reload, startTab = 0) {
       ${rows.map((x) => `<tr data-n="${esc((x.product_name + " " + x.category_name).toLowerCase())}">
         <td>${esc(x.product_name)} <span class="small muted">/${esc(x.unit)}</span></td><td>${esc(x.category_name)} ${x.category_active ? "" : `<span class="badge danger">category off — hidden from restaurant</span> <button class="btn sm" data-caton="${x.category_id}">Switch on</button>`}</td>
         <td class="right">${x.cost == null ? '<span class="badge danger">No rate</span>' : money(x.cost)}</td><td class="small">${esc(x.vendor_name || "")}</td>
-        <td class="right"><input type="number" step="0.01" style="width:90px" data-ov="${x.rp_id}" value="${x.margin_override ?? ""}" placeholder="—" ${x.fixed_price != null ? 'disabled title="Clear the fixed price to use a mark-up"' : ""}></td>
-        <td class="right"><input type="number" step="0.01" min="0" style="width:100px" data-fp="${x.rp_id}" data-cost="${x.cost ?? ""}" value="${x.fixed_price ?? ""}" placeholder="—"></td>
+        <td class="right"><input type="number" step="0.01" style="width:90px" data-ov="${x.rp_id}" value="${x.margin_override ?? ""}" placeholder="—" ${x.fixed_price != null ? 'disabled title="Click × Use mark-up to switch back"' : ""}></td>
+        <td class="right" style="white-space:nowrap"><input type="number" step="0.01" min="0" style="width:100px" data-fp="${x.rp_id}" data-cost="${x.cost ?? ""}" value="${x.fixed_price ?? ""}" placeholder="—">
+          ${x.fixed_price != null ? `<div><button class="btn sm" data-unfix="${x.rp_id}" title="Remove the fixed price and use the mark-up again">× Use mark-up</button></div>` : ""}</td>
         <td class="right">${x.cost != null && x.price != null && Number(x.price) < Number(x.cost) ? '<span class="badge danger">Below cost!</span>' : `<span class="${x.effective_margin != null && x.effective_margin < 10 ? "badge warn" : ""}">${pct(x.effective_margin)}</span>`}</td>
         <td class="right"><b>${money(x.price)}</b>${x.fixed_price != null ? ' <span class="badge info">fixed</span>' : ""}</td>
         <td><input type="checkbox" data-act="${x.rp_id}" ${x.rp_active ? "checked" : ""} title="Untick to hide from the restaurant"></td>
@@ -478,6 +479,10 @@ async function restaurantEditor(id, L, reload, startTab = 0) {
       if (!(await okFixedPrice(price, cost))) { listTab(); return; }
       try { await q(sb.from("boh_restaurant_products").update({ fixed_price: price }).eq("id", i.dataset.fp)); } catch { return listTab(); }
       toast(price == null ? "Fixed price cleared — mark-up applies" : `Fixed price set to ${money(price)}`); listTab();
+    }));
+    $$("[data-unfix]", body).forEach((b) => (b.onclick = async () => {
+      await q(sb.from("boh_restaurant_products").update({ fixed_price: null }).eq("id", b.dataset.unfix));
+      toast("Fixed price removed — mark-up applies again"); listTab();
     }));
     $$("[data-act]", body).forEach((i) => (i.onchange = async () => { await q(sb.from("boh_restaurant_products").update({ active: i.checked }).eq("id", i.dataset.act)); toast("Updated"); }));
     $$("[data-del]", body).forEach((b) => (b.onclick = async () => { await q(sb.from("boh_restaurant_products").delete().eq("id", b.dataset.del)); listTab(); }));
