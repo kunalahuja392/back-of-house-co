@@ -70,3 +70,19 @@ supabase/functions/boh-admin-users/   edge function that creates logins (service
 ## Deploy
 
 Any static host works. For GitHub Pages: Settings → Pages → Deploy from branch → `main` / root.
+
+## Notifications (email + WhatsApp) and daily report
+
+Everything that happens is queued in `boh_notifications` and sent to the relevant people:
+
+| Who | What |
+|---|---|
+| Restaurant logins | order received, coordinator per category (name + number), category delivered, order delivered + amount due, payment reminders, payment approved / rejected, request approved / rejected, complaint updates |
+| Coordinators | new allocation (with items, vendors and vendor phones), "due in 30 min" and "overdue" reminders, payment to verify, payment overdue, complaints on their orders, cancellations |
+| Admins (assigned to the restaurant, or all admins) | new order to allocate, allocation reminders / overdue, overdue coordinator steps, payments to verify, new requests, enquiries and complaints |
+| Super admins (+ extra emails / numbers) | **daily report**: sales, cost, gross & net profit, overheads by type, collected today, payments to verify, total due (top restaurants), overdue work, new requests / enquiries / complaints, by-restaurant and month-to-date |
+
+- **Email:** free via Brevo (300/day). Settings → Notifications: sender email (verified in Brevo) + API key.
+- **WhatsApp:** the self-hosted bot in [`whatsapp-bot/`](whatsapp-bot/) (unofficial WhatsApp Web — the number can be banned; use a separate SIM).
+- Reminders run every 10 minutes inside working hours (pg_cron); the daily report goes out at the time set in Settings.
+- Settings → Notifications has test buttons, report preview and "send now"; **Notifications** page shows every message with its status and a Retry button.

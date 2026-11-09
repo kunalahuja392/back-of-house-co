@@ -2,7 +2,7 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox,
-} from "./lib.js?v=13";
+} from "./lib.js?v=14";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -1221,4 +1221,140 @@ export async function settings(el) {
     const row = await q(sb.from("boh_settings").update(f).eq("id", 1).select().single());
     state.settings = row; toast("Settings saved");
   };
+  notificationSettings(el);
+}
+
+// ---------------------------------------------------------------- notifications (super admin)
+const BOT_FOLDER_URL = "https://github.com/kunalahuja392/back-of-house-co/tree/main/whatsapp-bot";
+async function notificationSettings(el) {
+  const s = state.settings;
+  const cfg = (await q(sb.rpc("boh_notify_config")))?.[0] || {};
+  const online = s.bot_last_seen && Date.now() - new Date(s.bot_last_seen) < 3 * 60000;
+  el.insertAdjacentHTML("beforeend", `
+    <div class="card" id="nf" style="margin-top:1rem">
+      <div class="row between"><h2 style="margin:0">Notifications</h2><a href="#/notifications">View sent messages →</a></div>
+      <p class="muted small">Restaurants, coordinators and admins get email and WhatsApp messages for orders, allocations, deadlines, deliveries, payments, requests, enquiries and complaints.
+        People only get WhatsApp if their phone number is filled in (Team & logins / restaurant logins).</p>
+      <div class="row" style="gap:1.5rem;margin-bottom:.8rem">
+        <label class="row" style="margin:0"><input type="checkbox" name="notify_email" ${s.notify_email ? "checked" : ""}> Email notifications</label>
+        <label class="row" style="margin:0"><input type="checkbox" name="notify_whatsapp" ${s.notify_whatsapp ? "checked" : ""}> WhatsApp notifications</label>
+      </div>
+      <div class="grid c2" style="align-items:start">
+        <div class="card" style="padding:.8rem;margin-top:0"><b>📧 Email — free via Brevo (300 emails/day)</b>
+          <ol class="small muted" style="padding-left:1.1rem;margin:.4rem 0">
+            <li>Sign up free at <a href="https://www.brevo.com" target="_blank" rel="noopener">brevo.com</a>.</li>
+            <li>Senders, domains & dedicated IPs → Senders → add and verify the email you'll send from.</li>
+            <li>SMTP & API → API keys → Generate a new API key, and paste it below.</li>
+          </ol>
+          <div class="field"><label>Send from (verified in Brevo)</label><input name="email_from" type="email" value="${esc(s.email_from || "")}" placeholder="orders@yourcompany.com"></div>
+          <div class="field"><label>Sender name</label><input name="email_from_name" value="${esc(s.email_from_name || s.company_name)}"></div>
+          <div class="field"><label>Brevo API key ${cfg.brevo_configured ? '<span class="badge ok">saved</span>' : '<span class="badge warn">not set</span>'}</label>
+            <input id="brevo" type="password" placeholder="${cfg.brevo_configured ? "Saved — paste a new key to replace it" : "xkeysib-…"}" autocomplete="off"></div>
+          <div class="row"><input id="testemail" type="email" value="${esc(state.me.email)}" style="flex:1"><button class="btn sm" id="sendtestemail" type="button">Send test email</button></div>
+        </div>
+        <div class="card" style="padding:.8rem;margin-top:0"><b>💬 WhatsApp — via your WhatsApp Web bot</b>
+          <div style="margin:.4rem 0">${online ? `<span class="badge ok">Bot online</span> <span class="small muted">last seen ${fmtDT(s.bot_last_seen)}</span>`
+            : `<span class="badge danger">Bot offline</span> <span class="small muted">${s.bot_last_seen ? "last seen " + fmtDT(s.bot_last_seen) : "never connected"}</span>`}</div>
+          <div class="notice small" style="margin:.4rem 0">⚠️ Unofficial — WhatsApp may ban the number. Use a separate business SIM.</div>
+          <ol class="small muted" style="padding-left:1.1rem;margin:.4rem 0">
+            <li>On a computer that stays on, install Node.js (LTS) from nodejs.org.</li>
+            <li>Download the <a href="${BOT_FOLDER_URL}" target="_blank" rel="noopener">whatsapp-bot folder</a> and follow its README.</li>
+            <li>Paste this bot key into its config.json, start it and scan the QR with the business phone.</li>
+          </ol>
+          <div class="field"><label>Bot key</label><div class="row" style="flex-wrap:nowrap"><input id="botkey" type="password" readonly value="${esc(cfg.bot_secret || "")}">
+            <button class="btn sm" type="button" id="showkey">👁</button><button class="btn sm" type="button" id="copykey">Copy</button><button class="btn sm" type="button" id="newkey">New key</button></div></div>
+          <div class="row"><input id="testphone" value="${esc(state.me.phone || "")}" placeholder="WhatsApp number" style="flex:1"><button class="btn sm" id="sendtestwa" type="button">Send test WhatsApp</button></div>
+        </div>
+      </div>
+      <h3 style="margin-top:1rem">📊 Daily report to super admins</h3>
+      <p class="small muted">Sales, cost, gross & net profit, overheads, collected today, payments to verify, total due (top restaurants), overdue work, new requests/enquiries/complaints, by-restaurant and month-to-date figures. Goes to every active super admin by email and WhatsApp.</p>
+      <div class="form-grid">
+        <div class="field"><label>Send every day at</label><input type="time" name="report_time" value="${(s.report_time || "21:00").slice(0, 5)}"></div>
+        <div class="field"><label>Also email to (comma separated)</label><input name="report_emails" value="${esc(s.report_emails || "")}" placeholder="partner@x.com, accounts@x.com"></div>
+        <div class="field"><label>Also WhatsApp to (comma separated)</label><input name="report_phones" value="${esc(s.report_phones || "")}" placeholder="98xxxxxxxx, 97xxxxxxxx"></div>
+      </div>
+      <div class="row"><button class="btn" id="preview" type="button">Preview today's report</button><button class="btn" id="sendreport" type="button">Send today's report now</button>
+        <span class="grow"></span><button class="btn primary" id="savenf" type="button">Save notification settings</button></div>
+    </div>`);
+  const nf = $("#nf", el);
+  $("#showkey", nf).onclick = () => { const i = $("#botkey", nf); i.type = i.type === "password" ? "text" : "password"; };
+  $("#copykey", nf).onclick = async () => { try { await navigator.clipboard.writeText($("#botkey", nf).value); toast("Bot key copied"); } catch { toast("Select the key and copy it", true); } };
+  $("#newkey", nf).onclick = async () => {
+    if (!(await confirmBox("Create a new bot key? The bot stops working until you put the new key in its config.json."))) return;
+    $("#botkey", nf).value = await q(sb.rpc("boh_rotate_bot_secret")); $("#botkey", nf).type = "text"; toast("New bot key created");
+  };
+  $("#savenf", nf).onclick = async () => {
+    const f = formData(nf);
+    const patch = { notify_email: f.notify_email, notify_whatsapp: f.notify_whatsapp, email_from: f.email_from, email_from_name: f.email_from_name,
+      report_time: f.report_time || "21:00", report_emails: f.report_emails, report_phones: f.report_phones, updated_at: new Date().toISOString() };
+    const row = await q(sb.from("boh_settings").update(patch).eq("id", 1).select().single());
+    state.settings = row;
+    const key = $("#brevo", nf).value.trim();
+    if (key) { await q(sb.rpc("boh_set_notify_secret", { p_key: "brevo_api_key", p_value: key })); $("#brevo", nf).value = ""; }
+    toast("Notification settings saved"); settings(el);
+  };
+  const sendNow = () => sb.functions.invoke("boh-notify", { body: {} }).catch(() => {});
+  $("#sendtestemail", nf).onclick = async () => {
+    await q(sb.rpc("boh_test_notification", { p_channel: "email", p_address: $("#testemail", nf).value }));
+    const { data } = await sb.functions.invoke("boh-notify", { body: {} });
+    if (data && data.configured === false) toast("Test queued — it will send once the Brevo key and sender email are saved", true);
+    else toast("Test email sent — check the inbox (and spam)");
+  };
+  $("#sendtestwa", nf).onclick = async () => {
+    await q(sb.rpc("boh_test_notification", { p_channel: "whatsapp", p_address: $("#testphone", nf).value }));
+    toast(online ? "Test WhatsApp queued — it should arrive within a minute" : "Test queued — it will send when the bot is online");
+  };
+  $("#preview", nf).onclick = async () => {
+    const text = await q(sb.rpc("boh_report_preview", {}));
+    modal({ title: "Today's report (preview)", body: `<div style="white-space:pre-wrap;font-size:13px">${esc(text).replace(/\*([^*\n]+)\*/g, "<b>$1</b>")}</div>` });
+  };
+  $("#sendreport", nf).onclick = async () => {
+    const n = await q(sb.rpc("boh_send_daily_report", { p_day: null, p_force: true }));
+    sendNow(); toast(n ? `Report queued to ${n} recipient(s)` : "No recipients — add phone/email to super admins or the extra lists", !n);
+  };
+}
+
+// ====================================================================== NOTIFICATIONS LOG (staff)
+export async function notifications(el) {
+  el.innerHTML = `
+    <div class="page-head"><div><h1>Notifications</h1><div class="muted">Every email and WhatsApp message the system has queued or sent.</div></div>
+      <div class="row"><button class="btn" id="sendnow">Send pending emails now</button>${isSuper() ? '<a class="btn" href="#/settings">Notification settings</a>' : ""}</div></div>
+    <div class="grid k4" id="nstats" style="margin-bottom:1rem"></div>
+    <div class="row" style="margin-bottom:.75rem">
+      <select id="fs" style="max-width:180px"><option value="">All statuses</option><option value="pending">Waiting</option><option value="sent">Sent</option><option value="failed">Failed</option></select>
+      <select id="fc" style="max-width:180px"><option value="">Email & WhatsApp</option><option value="email">Email</option><option value="whatsapp">WhatsApp</option></select>
+      <input id="fq" placeholder="Search name / number / text…" style="max-width:260px"></div>
+    <div id="nlist"></div>`;
+  const load = async () => {
+    let qq = sb.from("boh_notifications").select("*").order("id", { ascending: false }).limit(300);
+    if ($("#fs").value === "pending") qq = qq.in("status", ["pending", "sending"]); else if ($("#fs").value) qq = qq.eq("status", $("#fs").value);
+    if ($("#fc").value) qq = qq.eq("channel", $("#fc").value);
+    const rows = await q(qq);
+    const t = $("#fq").value.toLowerCase();
+    const list = t ? rows.filter((r) => `${r.name || ""} ${r.address} ${r.subject || ""} ${r.body}`.toLowerCase().includes(t)) : rows;
+    const c = (st) => rows.filter((r) => (st === "pending" ? ["pending", "sending"].includes(r.status) : r.status === st)).length;
+    $("#nstats").innerHTML = `<div class="card stat"><div class="l">Waiting</div><div class="v">${c("pending")}</div></div>
+      <div class="card stat"><div class="l">Sent</div><div class="v">${c("sent")}</div></div>
+      <div class="card stat"><div class="l">Failed</div><div class="v" style="color:var(--danger)">${c("failed")}</div></div>
+      <div class="card stat"><div class="l">WhatsApp bot</div><div class="v" style="font-size:1rem">${state.settings.bot_last_seen && Date.now() - new Date(state.settings.bot_last_seen) < 180000 ? '<span class="badge ok">online</span>' : '<span class="badge danger">offline</span>'}</div></div>`;
+    const badge = (st) => ({ pending: '<span class="badge warn">Waiting</span>', sending: '<span class="badge info">Sending</span>', sent: '<span class="badge ok">Sent</span>', failed: '<span class="badge danger">Failed</span>', skipped: '<span class="badge">Skipped</span>' }[st] || st);
+    $("#nlist").innerHTML = `<div class="table-wrap"><table><thead><tr><th>When</th><th>Via</th><th>To</th><th>Message</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map((r) => `<tr><td class="small">${fmtDT(r.created_at)}${r.sent_at ? `<div class="muted">sent ${fmtDT(r.sent_at)}</div>` : ""}</td>
+        <td>${r.channel === "email" ? "📧" : "💬"}</td>
+        <td><b>${esc(r.name || "")}</b><div class="small muted">${esc(r.address)}</div></td>
+        <td class="small"><span class="badge">${esc(r.event)}</span> ${esc((r.subject || r.body.split("\n")[0]).replace(/\*/g, "")).slice(0, 120)}
+          <details><summary class="muted">full text</summary><div style="white-space:pre-wrap">${esc(r.body)}</div></details></td>
+        <td>${badge(r.status)}${r.error ? `<div class="small" style="color:var(--danger)">${esc(r.error).slice(0, 140)}</div>` : ""}</td>
+        <td>${r.status === "failed" ? `<button class="btn sm" data-retry="${r.id}">Retry</button>` : ""}</td></tr>`).join("") || '<tr><td colspan="6" class="empty">Nothing yet.</td></tr>'}
+      </tbody></table></div>`;
+    $$("[data-retry]", el).forEach((b) => (b.onclick = async () => { await q(sb.rpc("boh_retry_notification", { p_id: Number(b.dataset.retry) })); toast("Queued again"); load(); }));
+  };
+  $("#fs").onchange = load; $("#fc").onchange = load; $("#fq").oninput = load;
+  $("#sendnow").onclick = async () => {
+    const { data, error } = await sb.functions.invoke("boh-notify", { body: {} });
+    if (error) return toast(error.message, true);
+    toast(data.configured === false ? data.message : `Sent ${data.sent}, failed ${data.failed}`, data.configured === false);
+    load();
+  };
+  load();
 }

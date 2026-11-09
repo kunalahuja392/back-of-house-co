@@ -1,0 +1,13 @@
+{
+  "name": "boh-whatsapp-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sends Back of House Co notifications through WhatsApp Web",
+  "main": "bot.js",
+  "scripts": { "start": "node bot.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.26.0"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "botKey": "PASTE-THE-BOT-KEY-FROM-SETTINGS-NOTIFICATIONS",
+  "outboxUrl": "https://gqusbphanvsqrieyhluo.supabase.co/functions/v1/boh-wa-outbox",
+  "pollSeconds": 20,
+  "minSecondsBetweenMessages": 4,
+  "maxSecondsBetweenMessages": 10,
+  "maxMessagesPerHour": 120
+}

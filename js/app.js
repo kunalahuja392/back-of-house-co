@@ -1,8 +1,8 @@
-import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=13";
-import * as admin from "./admin.js?v=13";
-import * as reports from "./reports.js?v=13";
-import * as coord from "./coordinator.js?v=13";
-import * as cust from "./customer.js?v=13";
+import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=14";
+import * as admin from "./admin.js?v=14";
+import * as reports from "./reports.js?v=14";
+import * as coord from "./coordinator.js?v=14";
+import * as cust from "./customer.js?v=14";
 
 const root = document.getElementById("root");
 
@@ -25,6 +25,7 @@ const MENUS = {
     ["reports", "📈", "Reports", reports.reports],
     ["Admin"],
     ["team", "👥", "Team & logins", admin.team],
+    ["notifications", "🔔", "Notifications", admin.notifications],
     ["settings", "⚙️", "Settings", admin.settings, "super_admin"],
   ],
   coordinator: [
