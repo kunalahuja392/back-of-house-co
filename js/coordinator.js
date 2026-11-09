@@ -1,45 +1,66 @@
-import { sb, state, $, $$, esc, money, fmtDT, fmtD, q, statusBadge, dueBadge, currentDue, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON, toast, promptBox } from "./lib.js?v=5";
-import { orderModal } from "./admin.js?v=5";
+import { sb, state, $, $$, esc, money, fmtDT, fmtD, q, statusBadge, dueText, allocSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON, toast, promptBox } from "./lib.js?v=6";
+import { orderModal, advanceAlloc } from "./admin.js?v=6";
 
+// each card = one category of one order allocated to me
 export async function tasks(el) {
+  const s = state.settings;
   el.innerHTML = `
     <div class="page-head"><div><h1>My assigned orders</h1>
-      <div class="muted">Acknowledge within ${state.settings.sla_ack_hrs} working hr → order with vendor within ${state.settings.sla_vendor_order_hrs} → 1st follow-up ${state.settings.sla_followup1_hrs} → 2nd follow-up ${state.settings.sla_followup2_hrs} → delivered → payment within ${state.settings.sla_payment_hrs} working hrs of delivery.</div></div>
-      <select id="st" style="max-width:200px"><option value="open">Open</option><option value="done">Completed (last 30 days)</option></select></div>
+      <div class="muted">Per category: acknowledge within ${s.sla_ack_hrs} working hr → order with vendor ${s.sla_vendor_order_hrs} → 1st follow-up ${s.sla_followup1_hrs} → 2nd follow-up ${s.sla_followup2_hrs} → delivered (enter porter / delivery / other charges) → payment within ${s.sla_payment_hrs} working hrs of delivery.</div></div>
+      <select id="st" style="max-width:220px"><option value="open">Open</option><option value="pay">Delivered — payment pending</option><option value="done">Completed (last 30 days)</option></select></div>
     <div id="list"></div>`;
   const load = async () => {
-    let qq = sb.from("boh_orders").select("*, restaurant:boh_restaurants(name,phone,address)").eq("coordinator_id", state.me.id);
-    qq = $("#st").value === "open" ? qq.not("status", "in", "(paid,cancelled)") : qq.in("status", ["paid", "cancelled"]).gte("created_at", new Date(Date.now() - 30 * 86400000).toISOString());
-    const orders = await q(qq.order("created_at"));
-    const ids = orders.map((o) => o.id);
-    const items = ids.length ? await q(sb.from("boh_order_items").select("order_id, product_name, qty, unit, vendor_id, vendor_name, delivery_style, vendor:boh_vendors(phones)").in("order_id", ids)) : [];
-    orders.sort((a, b) => (currentDue(a)?.due?.getTime() ?? 9e15) - (currentDue(b)?.due?.getTime() ?? 9e15));
-    $("#list").innerHTML = orders.map((o) => {
-      const vend = {};
-      items.filter((i) => i.order_id === o.id).forEach((i) => { (vend[i.vendor_id || "x"] ||= { name: i.vendor_name, style: i.delivery_style, phones: i.vendor?.phones, n: 0 }).n++; });
-      const next = NEXT_STEP[o.status];
-      return `<div class="card">
-        <div class="row between"><div><h2 style="margin:0">#${o.order_no} · ${esc(o.restaurant?.name)}</h2>
-          <div class="small muted">Placed ${fmtDT(o.created_at)} · Delivery ${fmtD(o.delivery_date)} · ${money(o.total)} · 📞 ${telLinks([o.restaurant?.phone])}</div></div>
-          <div class="row">${statusBadge(o.status)} ${dueBadge(o)}</div></div>
-        <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:.5rem;margin:.75rem 0">
-          ${Object.values(vend).map((v) => `<div style="background:#faf8f4;border-radius:8px;padding:.5rem .7rem">
-            <b>${esc(v.name || "No vendor")}</b> <span class="small muted">${v.n} item${v.n > 1 ? "s" : ""}</span>
-            <div class="small">${esc(DELIVERY_LABEL[v.style] || "")}</div><div class="small phones">📞 ${telLinks(v.phones)}</div></div>`).join("")}
-        </div>
-        <div class="row" style="justify-content:flex-end">
-          <button class="btn" data-open="${o.id}">Open details</button>
-          ${next ? `<button class="btn primary" data-step="${next}" data-id="${o.id}">${STEP_BUTTON[next]}</button>` : ""}
-        </div></div>`;
-    }).join("") || `<div class="card empty">No orders ${$("#st").value === "open" ? "waiting on you" : "completed recently"}.</div>`;
+    const mode = $("#st").value;
+    let allocs = await q(sb.from("boh_order_allocations").select("*, ord:boh_orders(*, restaurant:boh_restaurants(name,phone,address))").eq("coordinator_id", state.me.id).order("allocated_at"));
+    allocs = allocs.filter((a) => a.ord && (
+      mode === "open" ? a.status !== "delivered" && a.ord.status !== "cancelled"
+      : mode === "pay" ? a.ord.status === "delivered"
+      : ["paid", "cancelled"].includes(a.ord.status) && Date.now() - new Date(a.ord.created_at) < 30 * 86400000));
+    const orderIds = [...new Set(allocs.map((a) => a.order_id))];
+    const items = orderIds.length ? await q(sb.from("boh_order_items").select("order_id, category_id, product_name, qty, unit, vendor_id, vendor_name, delivery_style, vendor:boh_vendors(phones)").in("order_id", orderIds)) : [];
+    const due = (a) => allocSteps(a.ord, a).find((x) => !x.at)?.due?.getTime() ?? 9e15;
+    allocs.sort((x, y) => due(x) - due(y));
+
+    if (mode === "pay") {
+      // one card per order awaiting payment
+      const orders = [...new Map(allocs.map((a) => [a.order_id, a.ord])).values()];
+      $("#list").innerHTML = orders.map((o) => {
+        return `<div class="card"><div class="row between"><div><h2 style="margin:0">#${o.order_no} · ${esc(o.restaurant?.name)}</h2>
+          <div class="small muted">Delivered ${fmtDT(o.delivered_at)} · ${money(o.total)} · 📞 ${telLinks([o.restaurant?.phone])}</div></div>
+          <div class="row"><button class="btn" data-open="${o.id}">Open</button><button class="btn primary" data-paid="${o.id}">Mark payment completed</button></div></div></div>`;
+      }).join("") || `<div class="card empty">No payments pending.</div>`;
+    } else {
+      $("#list").innerHTML = allocs.map((a) => {
+        const o = a.ord;
+        const mine = items.filter((i) => i.order_id === a.order_id && i.category_id === a.category_id);
+        const vend = {};
+        mine.forEach((i) => { (vend[i.vendor_id || "x"] ||= { name: i.vendor_name, style: i.delivery_style, phones: i.vendor?.phones, lines: [] }).lines.push(i); });
+        const next = NEXT_STEP[a.status];
+        const st = allocSteps(o, a).find((x) => !x.at);
+        return `<div class="card">
+          <div class="row between"><div><h2 style="margin:0">#${o.order_no} · ${esc(o.restaurant?.name)} · <span style="color:var(--brand-2)">${esc(a.category_name)}</span></h2>
+            <div class="small muted">Placed ${fmtDT(o.created_at)} · Delivery ${fmtD(o.delivery_date)} · 📞 ${telLinks([o.restaurant?.phone])} · ${esc(o.restaurant?.address || "")}</div></div>
+            <div class="row">${statusBadge(a.status)} ${st?.due && mode === "open" ? dueText(st.due) : ""}</div></div>
+          <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:.5rem;margin:.75rem 0">
+            ${Object.values(vend).map((v) => `<div style="background:#faf8f4;border-radius:8px;padding:.5rem .7rem">
+              <b>${esc(v.name || "No vendor")}</b> <span class="badge info">${esc(DELIVERY_LABEL[v.style] || "")}</span>
+              <div class="small phones">📞 ${telLinks(v.phones)}</div>
+              <div class="small" style="margin-top:.3rem">${v.lines.map((l) => `${esc(l.product_name)} — <b>${Number(l.qty)} ${esc(l.unit || "")}</b>`).join("<br>")}</div></div>`).join("")}
+          </div>
+          <div class="row" style="justify-content:flex-end">
+            <button class="btn" data-open="${o.id}">Open order</button>
+            ${mode === "open" && ["vendor_ordered", "followup1"].includes(a.status) ? `<button class="btn" data-adv="${a.id}" data-step="delivered">Mark delivered</button>` : ""}
+            ${mode === "open" && next ? `<button class="btn primary" data-adv="${a.id}" data-step="${next}">${STEP_BUTTON[next]}</button>` : ""}
+          </div></div>`;
+      }).join("") || `<div class="card empty">${mode === "open" ? "Nothing waiting on you 🎉" : "Nothing completed recently."}</div>`;
+    }
     $$("[data-open]", el).forEach((b) => (b.onclick = () => orderModal(b.dataset.open, load)));
-    $$("[data-step]", el).forEach((b) => (b.onclick = async () => {
-      const step = b.dataset.step;
-      let note = null;
-      if (["followup1", "followup2"].includes(step)) { note = await promptBox("Follow-up note", "What did the vendor say?"); if (note === null) return; }
-      if (step === "paid") { note = await promptBox("Payment completed", "Payment reference (UPI / cheque / cash)"); if (note === null) return; }
-      await q(sb.rpc("boh_advance_order", { p_order: b.dataset.id, p_step: step, p_note: note }));
-      toast("Updated"); load();
+    $$("[data-adv]", el).forEach((b) => (b.onclick = () => advanceAlloc(allocs.find((a) => a.id === b.dataset.adv), b.dataset.step, load)));
+    $$("[data-paid]", el).forEach((b) => (b.onclick = async () => {
+      const ref = await promptBox("Payment completed", "Payment reference (UPI / cheque / cash)");
+      if (ref === null) return;
+      await q(sb.rpc("boh_mark_paid", { p_order: b.dataset.paid, p_ref: ref }));
+      toast("Payment recorded"); load();
     }));
   };
   $("#st").onchange = load;

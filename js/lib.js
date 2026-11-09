@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=5";
+import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=6";
 
 export const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -171,52 +171,76 @@ export function addWorkingHours(date, hours, s = state.settings) {
   return new Date(t.getTime() - OFF);
 }
 
-// the coordinator workflow with due times; each step is due relative to the previous step's completion
-export function orderSteps(o, s = state.settings) {
-  const steps = [
-    { key: "allocated", label: `Allocate to coordinator (admin, ${s.sla_allocate_hrs} working hrs)`, at: o.allocated_at, due: addWorkingHours(o.created_at, s.sla_allocate_hrs, s) },
-    { key: "acknowledged", label: `Acknowledge (${s.sla_ack_hrs} working hr)`, at: o.acknowledged_at, due: addWorkingHours(o.allocated_at, s.sla_ack_hrs, s) },
-    { key: "vendor_ordered", label: `Place order with vendor (${s.sla_vendor_order_hrs} working hrs)`, at: o.vendor_ordered_at, due: addWorkingHours(o.acknowledged_at, s.sla_vendor_order_hrs, s) },
-    { key: "followup1", label: `1st follow-up (${s.sla_followup1_hrs} working hrs)`, at: o.followup1_at, due: addWorkingHours(o.vendor_ordered_at, s.sla_followup1_hrs, s) },
-    { key: "followup2", label: `2nd follow-up (${s.sla_followup2_hrs} working hrs)`, at: o.followup2_at, due: addWorkingHours(o.followup1_at, s.sla_followup2_hrs, s) },
-    { key: "delivered", label: "Mark delivered", at: o.delivered_at, due: o.delivery_date ? new Date(o.delivery_date + "T" + s.work_end + "+05:30") : null },
-    { key: "paid", label: `Payment completed (${s.sla_payment_hrs} working hrs after delivery)`, at: o.paid_at, due: addWorkingHours(o.delivered_at, s.sla_payment_hrs, s) },
-  ];
+// ---- workflow: each category of an order is allocated to a coordinator and moves through these steps
+function judge(steps, cancelled) {
   const now = Date.now();
   for (const st of steps) {
     if (st.at) st.state = st.due && new Date(st.at) > st.due ? "late" : "done";
-    else if (o.status === "cancelled") st.state = "na";
+    else if (cancelled) st.state = "na";
     else st.state = st.due && now > st.due ? "overdue" : st.due ? "pending" : "waiting";
   }
   return steps;
 }
 
+// steps for one category allocation (a) of order (o)
+export function allocSteps(o, a, s = state.settings) {
+  return judge([
+    { key: "allocated", label: `Allocated to coordinator (admin, ${s.sla_allocate_hrs} working hrs)`, at: a.allocated_at, due: addWorkingHours(o.created_at, s.sla_allocate_hrs, s) },
+    { key: "acknowledged", label: `Acknowledge (${s.sla_ack_hrs} working hr)`, at: a.acknowledged_at, due: addWorkingHours(a.allocated_at, s.sla_ack_hrs, s) },
+    { key: "vendor_ordered", label: `Place order with vendor (${s.sla_vendor_order_hrs} working hrs)`, at: a.vendor_ordered_at, due: addWorkingHours(a.acknowledged_at, s.sla_vendor_order_hrs, s) },
+    { key: "followup1", label: `1st follow-up (${s.sla_followup1_hrs} working hrs)`, at: a.followup1_at, due: addWorkingHours(a.vendor_ordered_at, s.sla_followup1_hrs, s) },
+    { key: "followup2", label: `2nd follow-up (${s.sla_followup2_hrs} working hrs)`, at: a.followup2_at, due: addWorkingHours(a.followup1_at, s.sla_followup2_hrs, s) },
+    { key: "delivered", label: "Delivered (+ overheads)", at: a.delivered_at, due: o.delivery_date ? new Date(o.delivery_date + "T" + s.work_end + "+05:30") : null },
+  ], o.status === "cancelled");
+}
+
+// order-level steps: allocation of all categories, and payment after full delivery
+export function orderSteps(o, s = state.settings) {
+  return judge([
+    { key: "allocated", label: `All categories allocated (${s.sla_allocate_hrs} working hrs)`, at: o.status === "placed" ? null : o.allocated_at, due: addWorkingHours(o.created_at, s.sla_allocate_hrs, s) },
+    { key: "delivered", label: "Whole order delivered", at: o.delivered_at, due: o.delivery_date ? new Date(o.delivery_date + "T" + s.work_end + "+05:30") : null },
+    { key: "paid", label: `Payment completed (${s.sla_payment_hrs} working hrs after delivery)`, at: o.paid_at, due: addWorkingHours(o.delivered_at, s.sla_payment_hrs, s) },
+  ], o.status === "cancelled");
+}
+
 export const NEXT_STEP = {
   allocated: "acknowledged", acknowledged: "vendor_ordered", vendor_ordered: "followup1",
-  followup1: "followup2", followup2: "delivered", delivered: "paid",
+  followup1: "followup2", followup2: "delivered",
 };
 export const STEP_BUTTON = {
-  acknowledged: "Acknowledge order", vendor_ordered: "Mark ordered with vendor", followup1: "Log 1st follow-up",
+  acknowledged: "Acknowledge", vendor_ordered: "Mark ordered with vendor", followup1: "Log 1st follow-up",
   followup2: "Log 2nd follow-up", delivered: "Mark delivered", paid: "Mark payment completed",
 };
 
+// the next thing due on an order (o.allocs = its allocations, optional)
+export function pendingSteps(o) {
+  if (["paid", "cancelled"].includes(o.status)) return [];
+  const out = [];
+  if (o.status === "placed") out.push(orderSteps(o)[0]);
+  for (const a of o.allocs || []) {
+    const st = allocSteps(o, a).find((x) => !x.at);
+    if (st) out.push({ ...st, label: a.category_name + ": " + st.label });
+  }
+  if (o.status === "delivered") out.push(orderSteps(o)[2]);
+  return out.filter((x) => x.due);
+}
 export function currentDue(o) {
-  const st = orderSteps(o).find((x) => !x.at && x.state !== "na");
-  return st || null;
+  return pendingSteps(o).sort((a, b) => a.due - b.due)[0] || null;
 }
 
-export function dueBadge(o) {
-  if (["paid", "cancelled"].includes(o.status)) return "";
-  const st = currentDue(o);
-  if (!st || !st.due) return "";
-  const diff = st.due.getTime() - Date.now();
+export function dueText(due) {
+  const diff = due.getTime() - Date.now();
   const mins = Math.round(Math.abs(diff) / 60000);
   const txt = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
   return diff < 0 ? `<span class="badge danger">Overdue ${txt}</span>` : `<span class="badge ${diff < 3600000 ? "warn" : "ok"}">Due in ${txt}</span>`;
 }
+export function dueBadge(o) {
+  const st = currentDue(o);
+  return st ? dueText(st.due) : "";
+}
 
-export function stepsHTML(o) {
-  return `<div class="steps">${orderSteps(o).map((s) => `
+export function stepsHTML(steps) {
+  return `<div class="steps">${steps.map((s) => `
     <div class="step ${s.state === "done" ? "done" : ""} ${s.state === "late" ? "late" : ""} ${s.state === "overdue" ? "overdue" : ""}">
       <span class="dot"></span>
       <div><div>${esc(s.label)}</div>
@@ -224,6 +248,8 @@ export function stepsHTML(o) {
       <div>${s.state === "late" ? '<span class="badge danger">Late</span>' : s.state === "done" ? '<span class="badge ok">On time</span>' : s.state === "overdue" ? '<span class="badge danger">Overdue</span>' : ""}</div>
     </div>`).join("")}</div>`;
 }
+
+export const OVERHEAD_KINDS = ["Porter", "Delivery charge", "Loading / unloading", "Paid to vendor (extra)", "Toll / parking", "Other"];
 
 export const telLinks = (phones) =>
   (phones || []).filter(Boolean).map((p) => `<a href="tel:${esc(p)}">${esc(p)}</a>`).join(" ") || '<span class="muted">—</span>';

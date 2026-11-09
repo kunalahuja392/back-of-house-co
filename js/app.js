@@ -1,8 +1,8 @@
-import { sb, state, $, $$, esc, toast, q, modal } from "./lib.js?v=5";
-import * as admin from "./admin.js?v=5";
-import * as reports from "./reports.js?v=5";
-import * as coord from "./coordinator.js?v=5";
-import * as cust from "./customer.js?v=5";
+import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=6";
+import * as admin from "./admin.js?v=6";
+import * as reports from "./reports.js?v=6";
+import * as coord from "./coordinator.js?v=6";
+import * as cust from "./customer.js?v=6";
 
 const root = document.getElementById("root");
 
@@ -130,8 +130,8 @@ function newPasswordView({ signedIn = false } = {}) {
     e.preventDefault();
     const f = new FormData(e.target);
     if (f.get("p1") !== f.get("p2")) return toast("Passwords don't match", true);
-    const { error } = await sb.auth.updateUser({ password: f.get("p1") });
-    if (error) return toast(error.message, true);
+    try { await callUsersFn({ action: "set_own_password", password: f.get("p1") }); }
+    catch (err) { return toast(err.message, true); }
     toast("Password updated");
     if (signedIn) return modalRef?.close();
     recovering = false;

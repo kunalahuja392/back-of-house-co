@@ -1,4 +1,4 @@
-import { addWorkingHours, sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, q, tabs, todayIST, daysAgoIST, downloadCSV, orderSteps, DELIVERY_LABEL } from "./lib.js?v=5";
+import { addWorkingHours, sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, q, tabs, todayIST, daysAgoIST, downloadCSV, orderSteps, allocSteps, DELIVERY_LABEL } from "./lib.js?v=6";
 
 const sum = (a, f) => a.reduce((s, x) => s + Number(f(x) || 0), 0);
 function groupBy(arr, keyFn) { const m = new Map(); arr.forEach((x) => { const k = keyFn(x); if (!m.has(k)) m.set(k, []); m.get(k).push(x); }); return m; }
@@ -18,7 +18,7 @@ export async function reports(el) {
       <div><label>&nbsp;</label><button class="btn primary" id="run">Run</button></div></div></div>
     <div class="tabs" id="tb"></div><div id="out"><div class="empty">Loading…</div></div>`;
   let data;
-  const NAMES = ["Restaurant sales", "Product × restaurant", "Category sales", "Top products", "Vendor purchases", "Coordinator SLA", "Payments outstanding", "Complaints", "Product requests", "Margin by restaurant & category"];
+  const NAMES = ["Restaurant sales", "Overheads", "Product × restaurant", "Category sales", "Top products", "Vendor purchases", "Coordinator SLA", "Payments outstanding", "Complaints", "Product requests", "Margin by restaurant & category"];
   let current = 0;
 
   const load = async () => {
@@ -30,19 +30,29 @@ export async function reports(el) {
       q(sb.from("boh_complaints").select("*").gte("created_at", from).lte("created_at", to)),
       q(sb.from("boh_product_requests").select("*, product:boh_products(name)").gte("created_at", from).lte("created_at", to)),
     ]);
-    let items = [];
+    let items = [], ohs = [], allocs = [];
     const ids = orders.map((o) => o.id);
-    for (let i = 0; i < ids.length; i += 150) items = items.concat(await q(sb.from("boh_order_items").select("*").in("order_id", ids.slice(i, i + 150))));
+    for (let i = 0; i < ids.length; i += 150) {
+      const chunk = ids.slice(i, i + 150);
+      const [a, b, c] = await Promise.all([
+        q(sb.from("boh_order_items").select("*").in("order_id", chunk)),
+        q(sb.from("boh_order_overheads").select("*").in("order_id", chunk)),
+        q(sb.from("boh_order_allocations").select("*").in("order_id", chunk)),
+      ]);
+      items = items.concat(a); ohs = ohs.concat(b); allocs = allocs.concat(c);
+    }
     const orderMap = Object.fromEntries(orders.map((o) => [o.id, o]));
     items.forEach((i) => (i.order = orderMap[i.order_id]));
-    data = { orders, items, complaints, requests, rest: Object.fromEntries(rests.map((r) => [r.id, r.name])), user: Object.fromEntries(users.map((u) => [u.id, u.full_name])) };
+    ohs.forEach((x) => (x.order = orderMap[x.order_id]));
+    allocs.forEach((a) => (a.order = orderMap[a.order_id]));
+    data = { orders, items, ohs, allocs, complaints, requests, rest: Object.fromEntries(rests.map((r) => [r.id, r.name])), user: Object.fromEntries(users.map((u) => [u.id, u.full_name])) };
     render(current);
   };
 
   const render = (i) => {
     current = i;
     const out = $("#out");
-    const R = [restaurantSales, productRestaurant, categorySales, topProducts, vendorPurchases, coordinatorSLA, paymentsOutstanding, complaintsReport, requestsReport, marginMatrix][i];
+    const R = [restaurantSales, overheadsReport, productRestaurant, categorySales, topProducts, vendorPurchases, coordinatorSLA, paymentsOutstanding, complaintsReport, requestsReport, marginMatrix][i];
     const { html, csv, title } = R(data);
     out.innerHTML = `<div class="row between" style="margin-bottom:.6rem"><h2 style="margin:0">${esc(title)}</h2><button class="btn sm" id="csv">⬇ Export CSV</button></div>${html}`;
     $("#csv").onclick = () => downloadCSV(`${title.replace(/\W+/g, "_").toLowerCase()}_${$("#rf").value}_${$("#rt").value}.csv`, csv);
@@ -54,19 +64,48 @@ export async function reports(el) {
   function restaurantSales(d) {
     const rows = [...groupBy(d.orders, (o) => o.restaurant_id)].map(([rid, os]) => {
       const sales = sum(os, (o) => o.total), cost = sum(os, (o) => o.cost_total);
-      return { Restaurant: d.rest[rid] || "—", Orders: os.length, Sales: sales, Cost: cost, Margin: sales - cost, "Margin %": sales ? ((sales - cost) / sales) * 100 : 0, "Avg order": sales / os.length,
+      const oh = sum(d.ohs.filter((x) => x.order.restaurant_id === rid), (x) => x.amount);
+      return { Restaurant: d.rest[rid] || "—", Orders: os.length, Sales: sales, Cost: cost, Margin: sales - cost, "Margin %": sales ? ((sales - cost) / sales) * 100 : 0,
+        Overheads: oh, "Net margin": sales - cost - oh, "Avg order": sales / os.length,
         Paid: sum(os.filter((o) => o.status === "paid"), (o) => o.total), Outstanding: sum(os.filter((o) => o.status !== "paid"), (o) => o.total) };
     }).sort((a, b) => b.Sales - a.Sales);
     const tot = { Restaurant: "TOTAL", Orders: sum(rows, (r) => r.Orders), Sales: sum(rows, (r) => r.Sales), Cost: sum(rows, (r) => r.Cost) };
-    tot.Margin = tot.Sales - tot.Cost; tot["Margin %"] = tot.Sales ? (tot.Margin / tot.Sales) * 100 : 0; tot["Avg order"] = tot.Orders ? tot.Sales / tot.Orders : 0;
+    tot.Margin = tot.Sales - tot.Cost; tot["Margin %"] = tot.Sales ? (tot.Margin / tot.Sales) * 100 : 0;
+    tot.Overheads = sum(rows, (r) => r.Overheads); tot["Net margin"] = tot.Margin - tot.Overheads; tot["Avg order"] = tot.Orders ? tot.Sales / tot.Orders : 0;
     tot.Paid = sum(rows, (r) => r.Paid); tot.Outstanding = sum(rows, (r) => r.Outstanding);
     const m = (k) => ({ key: k, label: k, num: true, fmt: money });
     bindInner = null;
     return {
       title: "Restaurant-wise sales",
       html: table([{ key: "Restaurant", label: "Restaurant", fmt: (v) => (v === "TOTAL" ? `<b>${v}</b>` : esc(v)) }, { key: "Orders", label: "Orders", num: true }, m("Sales"), m("Cost"), m("Margin"),
-        { key: "Margin %", label: "Margin %", num: true, fmt: pct }, m("Avg order"), m("Paid"), m("Outstanding")], rows.length ? [...rows, tot] : [], { bar: "Sales" }),
+        { key: "Margin %", label: "Margin %", num: true, fmt: pct }, m("Overheads"), m("Net margin"), m("Avg order"), m("Paid"), m("Outstanding")], rows.length ? [...rows, tot] : [], { bar: "Sales" }),
       csv: [...rows, tot].map((r) => ({ ...r, "Margin %": r["Margin %"].toFixed(2) })),
+    };
+  }
+
+  function overheadsReport(d) {
+    const total = sum(d.ohs, (x) => x.amount);
+    const byKind = [...groupBy(d.ohs, (x) => x.kind)].map(([k, xs]) => ({ Type: k, Entries: xs.length, Amount: sum(xs, (x) => x.amount) })).sort((a, b) => b.Amount - a.Amount);
+    const byRest = [...groupBy(d.ohs, (x) => x.order.restaurant_id)].map(([rid, xs]) => {
+      const sales = sum(d.orders.filter((o) => o.restaurant_id === rid), (o) => o.total);
+      return { Restaurant: d.rest[rid], Amount: sum(xs, (x) => x.amount), "% of sales": sales ? (sum(xs, (x) => x.amount) / sales) * 100 : 0 };
+    }).sort((a, b) => b.Amount - a.Amount);
+    const byCoord = [...groupBy(d.ohs, (x) => x.created_by)].map(([u, xs]) => ({ Coordinator: d.user[u] || "—", Entries: xs.length, Amount: sum(xs, (x) => x.amount) })).sort((a, b) => b.Amount - a.Amount);
+    const sales = sum(d.orders, (o) => o.total);
+    const card = (l, v, sub = "") => `<div class="card stat"><div class="l">${esc(l)}</div><div class="v">${v}</div>${sub ? `<div class="small muted">${sub}</div>` : ""}</div>`;
+    bindInner = null;
+    return {
+      title: "Overheads (porter, delivery & other charges)",
+      html: `<div class="grid k4" style="margin-bottom:1rem">
+          ${card("Total overheads", money(total), sales ? pct((total / sales) * 100) + " of sales" : "")}
+          ${byKind.map((k) => card("Total " + k.Type.toLowerCase(), money(k.Amount), k.Entries + " entries")).join("")}
+        </div>
+        <div class="grid c2">
+          <div><h3>By type</h3>${table([{ key: "Type", label: "Type" }, { key: "Entries", label: "Entries", num: true }, { key: "Amount", label: "Amount", num: true, fmt: money }], byKind, { bar: "Amount" })}</div>
+          <div><h3>By restaurant</h3>${table([{ key: "Restaurant", label: "Restaurant" }, { key: "Amount", label: "Amount", num: true, fmt: money }, { key: "% of sales", label: "% of sales", num: true, fmt: pct }], byRest, { bar: "Amount" })}</div>
+          <div><h3>By coordinator</h3>${table([{ key: "Coordinator", label: "Coordinator" }, { key: "Entries", label: "Entries", num: true }, { key: "Amount", label: "Amount", num: true, fmt: money }], byCoord)}</div>
+        </div>`,
+      csv: d.ohs.map((x) => ({ Date: fmtDT(x.created_at), Order: x.order.order_no, Restaurant: d.rest[x.order.restaurant_id], Type: x.kind, Amount: x.amount, Note: x.note || "", "Entered by": d.user[x.created_by] || "" })),
     };
   }
 
@@ -125,21 +164,30 @@ export async function reports(el) {
   }
 
   function coordinatorSLA(d) {
-    const keys = ["allocated", "acknowledged", "vendor_ordered", "followup1", "followup2", "paid"];
-    const label = { allocated: "Allocation (admin)", acknowledged: "Ack", vendor_ordered: "Vendor order", followup1: "F-up 1", followup2: "F-up 2", paid: "Payment" };
-    const rows = [...groupBy(d.orders, (o) => o.coordinator_id || "none")].map(([cid, os]) => {
-      const r = { Coordinator: cid === "none" ? "Unassigned" : d.user[cid] || "—", Orders: os.length, Overdue: 0 };
+    const keys = ["allocated", "acknowledged", "vendor_ordered", "followup1", "followup2", "delivered"];
+    const label = { allocated: "Allocation (admin)", acknowledged: "Ack", vendor_ordered: "Vendor order", followup1: "F-up 1", followup2: "F-up 2", delivered: "Delivered by date" };
+    const rows = [...groupBy(d.allocs, (a) => a.coordinator_id)].map(([cid, as]) => {
+      const r = { Coordinator: d.user[cid] || "—", Categories: as.length, Orders: new Set(as.map((a) => a.order_id)).size, Overdue: 0,
+        Overheads: sum(d.ohs.filter((x) => as.some((a) => a.id === x.allocation_id)), (x) => x.amount) };
       keys.forEach((k) => {
         let done = 0, onTime = 0;
-        os.forEach((o) => { const st = orderSteps(o).find((s) => s.key === k); if (st.state === "done" || st.state === "late") { done++; if (st.state === "done") onTime++; } if (st.state === "overdue") r.Overdue++; });
+        as.forEach((a) => { const st = allocSteps(a.order, a).find((s) => s.key === k); if (st.state === "done" || st.state === "late") { done++; if (st.state === "done") onTime++; } if (st.state === "overdue") r.Overdue++; });
         r[label[k]] = done ? (onTime / done) * 100 : null;
       });
+      // payment is per order: count orders this coordinator was on
+      let pd = 0, pon = 0;
+      [...new Set(as.map((a) => a.order))].forEach((o) => { const st = orderSteps(o)[2]; if (st.at) { pd++; if (st.state === "done") pon++; } });
+      r.Payment = pd ? (pon / pd) * 100 : null;
       return r;
     });
+    const unalloc = d.orders.filter((o) => o.status === "placed").length;
     bindInner = null;
-    return { title: "Coordinator SLA — % of steps done on time", html: table([{ key: "Coordinator", label: "Coordinator" }, { key: "Orders", label: "Orders", num: true },
-      ...keys.map((k) => ({ key: label[k], label: label[k], num: true, fmt: (v) => (v == null ? "—" : `<span class="badge ${v >= 90 ? "ok" : v >= 70 ? "warn" : "danger"}">${pct(v)}</span>`) })),
-      { key: "Overdue", label: "Currently overdue", num: true }], rows), csv: rows };
+    const badge = (v) => (v == null ? "—" : `<span class="badge ${v >= 90 ? "ok" : v >= 70 ? "warn" : "danger"}">${pct(v)}</span>`);
+    return { title: "Coordinator SLA — % of steps done on time (per category allocated)",
+      html: (unalloc ? `<div class="notice">${unalloc} order(s) in this period still waiting for allocation.</div>` : "") +
+        table([{ key: "Coordinator", label: "Coordinator" }, { key: "Orders", label: "Orders", num: true }, { key: "Categories", label: "Categories", num: true },
+        ...[...keys.map((k) => label[k]), "Payment"].map((l) => ({ key: l, label: l, num: true, fmt: badge })),
+        { key: "Overdue", label: "Overdue now", num: true }, { key: "Overheads", label: "Overheads", num: true, fmt: money }], rows), csv: rows };
   }
 
   function paymentsOutstanding(d) {

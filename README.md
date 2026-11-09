@@ -9,11 +9,11 @@ Static web app (plain HTML/JS, no build step) on top of a dedicated Supabase pro
 | Role | What they do |
 |---|---|
 | **Super admin** | Everything, plus creates admins and edits working hours / SLAs / cut-off (Settings) |
-| **Admin** | Restaurants, ordering lists & mark-ups, products, vendors & rates, request approvals, showcase slideshow, allocation of orders to coordinators, complaints, reports |
-| **Coordinator** | Sees allocated orders with vendor phone numbers & delivery style (porter / vendor delivers / pickup), marks each workflow step |
-| **Restaurant (customer)** | Places orders from their ordering list with their prices, repeats last order, sees their coordinator's number, browses & requests other products, raises complaints |
+| **Admin** | Restaurants (created together with their login and switched-on categories), ordering lists & mark-ups, products, vendors & rates, request approvals, showcase slideshow, category-wise allocation of orders to coordinators, complaints, reports. Admins can be assigned to restaurants (internal only). |
+| **Coordinator** | Sees the order categories allocated to them with vendor phone numbers & delivery style, marks each step, and records overheads (porter, delivery charge, anything paid) when marking delivered |
+| **Restaurant (customer)** | Orders from a photo or list view of their ordering list (switched-on categories only) with their prices, repeats last order, sees who is handling each category of their order, browses & requests other products, raises complaints |
 
-Customers can't sign up — admins create every restaurant and login.
+Customers can't sign up — admins create every restaurant together with its login. The super admin can see the passwords set through the app (Team & logins / restaurant Logins).
 
 ## Pricing
 
@@ -24,6 +24,8 @@ The best rate is the lowest active rate from an active vendor; making a vendor i
 Restaurants never see cost, vendor or margin — prices come from the `boh_my_catalog()` function and order totals are calculated on the server.
 
 ## Order workflow & SLAs (working hours, configurable)
+
+Each category of an order is allocated to a coordinator (one pick fills every category; any category can be changed). Every category runs these steps on its own; the order is delivered when all categories are.
 
 1. Admin allocates the order to a coordinator — 2 working hrs from order
 2. Coordinator acknowledges — 1 working hr
@@ -37,7 +39,7 @@ Working hours default to Mon–Sat, 10:00–19:00 IST. Overdue steps are flagged
 
 ## Reports
 
-Restaurant-wise sales · Product × restaurant (who buys what) · Category sales · Top products · Vendor purchases · Coordinator SLA · Payments outstanding · Complaints · Product requests · Realised margin by restaurant × category. Every report exports to CSV.
+Restaurant-wise sales with overheads & net margin · Overheads (total porter, delivery, other — by type, restaurant, coordinator) · Product × restaurant (who buys what) · Category sales · Top products · Vendor purchases · Coordinator SLA · Payments outstanding · Complaints · Product requests · Realised margin by restaurant × category. Every report exports to CSV.
 
 ## First-time setup
 

@@ -1,4 +1,4 @@
-import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks } from "./lib.js?v=5";
+import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks } from "./lib.js?v=6";
 
 const CART_KEY = () => "boh_cart_" + state.me.restaurant_id;
 const loadCart = () => { try { return JSON.parse(localStorage.getItem(CART_KEY()) || "{}"); } catch { return {}; } };
@@ -27,13 +27,13 @@ function cutoffInfo() {
 
 // ====================================================================== HOME
 export async function home(el) {
-  const [slides, coord, orders, cat] = await Promise.all([
+  const [slides, orders, cat] = await Promise.all([
     q(sb.from("boh_featured").select("*, product:boh_products(id,name,image_url,description,unit,brand)").eq("active", true)),
-    q(sb.rpc("boh_my_coordinator")),
     q(sb.from("boh_orders").select("*").order("created_at", { ascending: false }).limit(5)),
     myCatalog(true),
   ]);
-  const c = coord?.[0];
+  const open = orders.filter((o) => !["paid", "cancelled"].includes(o.status)).slice(0, 3);
+  const coords = await Promise.all(open.map((o) => q(sb.rpc("boh_order_coordinators", { p_order: o.id }))));
   const ci = cutoffInfo();
   el.innerHTML = `
     <div id="slides"></div>
@@ -41,10 +41,11 @@ export async function home(el) {
       <a class="btn primary" href="#/order">🛒 Place today's order</a></div>
     <div class="notice ${ci.open ? "green" : ""}">${ci.html}</div>
     <div class="grid c2">
-      <div class="card"><h2>Your coordinator</h2>
-        ${c ? `<div style="font-size:1.1rem;font-weight:650">${esc(c.full_name)}</div>
-          <div class="phones" style="font-size:1.05rem;margin:.3rem 0">📞 ${telLinks([c.phone])}</div><div class="small muted">${esc(c.email || "")}</div>`
-          : `<div class="muted">A coordinator will be assigned to you shortly.</div>`}
+      <div class="card"><h2>Your coordinators</h2>
+        ${open.length ? open.map((o, i) => `<div style="margin-bottom:.6rem"><b>Order #${o.order_no}</b> <span class="small muted">delivery ${fmtD(o.delivery_date)}</span>
+          ${coords[i].length ? coords[i].map((c) => `<div class="small">${esc(c.category_name)}: <b>${esc(c.full_name)}</b> 📞 ${telLinks([c.phone])}</div>`).join("")
+            : '<div class="small muted">A coordinator will be assigned shortly.</div>'}</div>`).join("")
+          : `<div class="muted">When you place an order, the coordinator handling it will appear here with their number.</div>`}
         ${state.settings.support_phone ? `<div class="small" style="margin-top:.75rem">Support: ${telLinks([state.settings.support_phone])}</div>` : ""}
       </div>
       <div class="card"><h2>Your ordering list</h2>
@@ -117,6 +118,8 @@ export async function placeOrder(el) {
   Object.keys(cart).forEach((k) => { if (!cat.find((c) => c.product_id === k)) delete cart[k]; });
   const cats = [...new Map(cat.map((c) => [c.category_id, c.category_name])).entries()];
   const ci = cutoffInfo();
+  const VKEY = "boh_order_view";
+  const view = () => { try { return localStorage.getItem(VKEY) || "grid"; } catch { return "grid"; } };
   el.innerHTML = `
     <div class="page-head"><div><h1>Place order</h1><div class="muted">Your ordering list with your prices. Enter quantities and review.</div></div>
       <div class="row"><button class="btn" id="repeat">↻ Repeat last order</button><button class="btn" id="clear">Clear</button></div></div>
@@ -124,14 +127,17 @@ export async function placeOrder(el) {
     ${cat.length ? `
     <div class="row" style="margin-bottom:.75rem"><input id="s" placeholder="Search your list…" style="max-width:320px">
       <select id="c" style="max-width:240px"><option value="">All categories</option>${cats.map(([id, n]) => `<option value="${id}">${esc(n)}</option>`).join("")}</select>
-      <label class="row" style="margin:0"><input type="checkbox" id="only"> Show only items in cart</label></div>
-    <div class="table-wrap" style="max-height:none"><table><thead><tr><th>Product</th><th>Category</th><th class="right">Price</th><th>Quantity</th><th class="right">Amount</th></tr></thead><tbody>
-      ${cat.map((p) => `<tr data-id="${p.product_id}" data-n="${esc((p.product_name + " " + (p.brand || "")).toLowerCase())}" data-c="${p.category_id}">
-        <td><b>${esc(p.product_name)}</b>${p.brand ? ` <span class="small muted">${esc(p.brand)}</span>` : ""}</td><td class="small">${esc(p.category_name)}</td>
-        <td class="right">${p.price == null ? '<span class="small muted">Price on request</span>' : money(p.price) + ` <span class="small muted">/${esc(p.unit)}</span>`}</td>
-        <td><div class="qty"><button class="btn sm" data-dec>−</button><input type="number" min="0" step="any" data-q value="${cart[p.product_id] || ""}" ${p.price == null ? "disabled" : ""}><button class="btn sm" data-inc>+</button></div></td>
-        <td class="right" data-amt></td></tr>`).join("")}
-    </tbody></table></div>
+      <label class="row" style="margin:0"><input type="checkbox" id="only"> Show only items in cart</label>
+      <span class="grow"></span>
+      <div class="seg"><button data-view="grid" class="${view() === "grid" ? "on" : ""}">▦ Photos</button><button data-view="list" class="${view() === "list" ? "on" : ""}">☰ List</button></div></div>
+    <div class="olist ${view()}" id="olist">
+      ${cat.map((p) => `<div class="item" data-id="${p.product_id}" data-n="${esc((p.product_name + " " + (p.brand || "")).toLowerCase())}" data-c="${p.category_id}">
+        <div class="pic" ${p.image_url ? `style="background-image:url('${esc(p.image_url)}')"` : ""}>${p.image_url ? "" : "📦"}</div>
+        <div class="nm"><b>${esc(p.product_name)}</b>${p.brand ? ` <span class="small muted">${esc(p.brand)}</span>` : ""}<div class="small muted">${esc(p.category_name)}</div></div>
+        <div class="pr">${p.price == null ? '<span class="small muted">Price on request</span>' : money(p.price) + ` <span class="small muted">/${esc(p.unit)}</span>`}</div>
+        <div class="qty"><button class="btn sm" data-dec>−</button><input type="number" min="0" step="any" data-q value="${cart[p.product_id] || ""}" ${p.price == null ? "disabled" : ""}><button class="btn sm" data-inc>+</button></div>
+        <div class="amt" data-amt></div></div>`).join("")}
+    </div>
     <div class="cart-bar"><div><b id="cnt">0</b> items · <b id="tot">₹0</b> <span class="small" style="opacity:.7">(prices excl. taxes if applicable)</span></div>
       <button class="btn accent" id="review">Review & place order →</button></div>`
     : `<div class="card empty">Your ordering list is being set up by our team. You can <a href="#/browse">browse products</a> and request what you need.</div>`}`;
@@ -140,33 +146,39 @@ export async function placeOrder(el) {
   const byId = Object.fromEntries(cat.map((c) => [c.product_id, c]));
   const recalc = () => {
     let cnt = 0, tot = 0;
-    $$("tr[data-id]", el).forEach((tr) => {
+    $$(".item[data-id]", el).forEach((tr) => {
       const v = Number($("[data-q]", tr).value) || 0;
       const p = byId[tr.dataset.id];
       if (v > 0) { cart[tr.dataset.id] = v; cnt++; tot += v * Number(p.price || 0); } else delete cart[tr.dataset.id];
       $("[data-amt]", tr).textContent = v > 0 ? money(v * Number(p.price || 0)) : "";
+      tr.classList.toggle("has", v > 0);
     });
     $("#cnt").textContent = cnt; $("#tot").textContent = money(tot);
     saveCart(cart);
   };
   const filter = () => {
     const s = $("#s").value.toLowerCase(), c = $("#c").value, only = $("#only").checked;
-    $$("tr[data-id]", el).forEach((tr) => tr.classList.toggle("hidden", !(tr.dataset.n.includes(s) && (!c || tr.dataset.c === c) && (!only || cart[tr.dataset.id]))));
+    $$(".item[data-id]", el).forEach((tr) => tr.classList.toggle("hidden", !(tr.dataset.n.includes(s) && (!c || tr.dataset.c === c) && (!only || cart[tr.dataset.id]))));
   };
-  $$("tr[data-id]", el).forEach((tr) => {
+  $$(".item[data-id]", el).forEach((tr) => {
     const inp = $("[data-q]", tr);
     inp.oninput = recalc;
     $("[data-inc]", tr).onclick = () => { if (!inp.disabled) { inp.value = (Number(inp.value) || 0) + 1; recalc(); } };
     $("[data-dec]", tr).onclick = () => { inp.value = Math.max(0, (Number(inp.value) || 0) - 1) || ""; recalc(); };
   });
   $("#s").oninput = filter; $("#c").onchange = filter; $("#only").onchange = filter;
+  $$("[data-view]", el).forEach((b) => (b.onclick = () => {
+    try { localStorage.setItem(VKEY, b.dataset.view); } catch {}
+    $("#olist").className = "olist " + b.dataset.view;
+    $$("[data-view]", el).forEach((x) => x.classList.toggle("on", x === b));
+  }));
   $("#clear").onclick = () => { $$("[data-q]", el).forEach((i) => (i.value = "")); recalc(); };
   $("#repeat").onclick = async () => {
     const last = await q(sb.from("boh_orders").select("id,order_no").neq("status", "cancelled").order("created_at", { ascending: false }).limit(1));
     if (!last.length) return toast("No previous order yet", true);
     const lines = await q(sb.rpc("boh_order_lines", { p_order: last[0].id }));
     let n = 0;
-    lines.forEach((l) => { const tr = $(`tr[data-id="${l.product_id}"]`, el); if (tr && !$("[data-q]", tr).disabled) { $("[data-q]", tr).value = Number(l.qty); n++; } });
+    lines.forEach((l) => { const tr = $(`.item[data-id="${l.product_id}"]`, el); if (tr && !$("[data-q]", tr).disabled) { $("[data-q]", tr).value = Number(l.qty); n++; } });
     recalc(); toast(`Filled ${n} items from order #${last[0].order_no}`);
   };
   $("#review").onclick = () => {
@@ -209,11 +221,12 @@ export async function myOrders(el) {
     </tbody></table></div>`;
   $$("[data-v]", el).forEach((b) => (b.onclick = async () => {
     const o = orders.find((x) => x.id === b.dataset.v);
-    const lines = await q(sb.rpc("boh_order_lines", { p_order: o.id }));
+    const [lines, coords] = await Promise.all([q(sb.rpc("boh_order_lines", { p_order: o.id })), q(sb.rpc("boh_order_coordinators", { p_order: o.id }))]);
     const m = modal({
       title: `Order #${o.order_no}`,
       body: `<div class="row" style="margin-bottom:1rem">${statusBadge(o.status)}<span class="muted">Delivery ${fmtD(o.delivery_date)}</span></div>
         <div class="steps" style="margin-bottom:1rem">${CUST_STEPS.map(([k, l]) => `<div class="step ${o[k] ? "done" : ""}"><span class="dot"></span><div>${l}</div><div class="small muted">${o[k] ? fmtDT(o[k]) : ""}</div></div>`).join("")}</div>
+        ${coords.length ? `<div class="card" style="padding:.7rem;margin-bottom:1rem"><b>Your coordinators</b>${coords.map((c) => `<div class="small">${esc(c.category_name)}: ${esc(c.full_name)} 📞 ${telLinks([c.phone])}</div>`).join("")}</div>` : ""}
         <table><thead><tr><th>Product</th><th class="right">Qty</th><th class="right">Price</th><th class="right">Amount</th></tr></thead><tbody>
         ${lines.map((l) => `<tr><td>${esc(l.product_name)}</td><td class="right">${num(l.qty, 3)} ${esc(l.unit)}</td><td class="right">${money(l.unit_price)}</td><td class="right">${money(l.line_total)}</td></tr>`).join("")}
         <tr><td colspan="3"><b>Total</b></td><td class="right"><b>${money(o.total)}</b></td></tr></tbody></table>
@@ -227,11 +240,12 @@ export async function myOrders(el) {
 // ====================================================================== BROWSE & REQUEST
 export async function browse(el) {
   const [prods, cats, cat, reqs] = await Promise.all([
-    q(sb.from("boh_products").select("id,name,unit,brand,description,image_url,category_id").eq("active", true).order("name")),
+    q(sb.from("boh_products").select("id,name,unit,brand,description,image_url,show_image,category_id").eq("active", true).order("name")),
     q(sb.from("boh_categories").select("id,name").eq("active", true).order("sort")),
     myCatalog(true),
     q(sb.from("boh_product_requests").select("*, product:boh_products(name)").order("created_at", { ascending: false })),
   ]);
+  prods.forEach((p) => { if (!p.show_image) p.image_url = null; });
   const onList = new Set(cat.map((c) => c.product_id));
   const pending = new Set(reqs.filter((r) => r.status === "pending").map((r) => r.product_id));
   el.innerHTML = `

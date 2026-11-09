@@ -140,3 +140,23 @@ tr:hover td { background: #fcfbf8; }
 .chart-bar { height: 10px; background: var(--brand-2); border-radius: 4px; }
 .grid > .card + .card { margin-top: 0; }
 a.btn { text-decoration: none; }
+
+/* restaurant ordering screen: photo grid or compact list */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: #fff; padding: .45rem .8rem; font: inherit; cursor: pointer; color: var(--muted); }
+.seg button.on { background: var(--brand); color: #fff; }
+.olist.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .9rem; }
+.olist.grid .item { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
+.olist.grid .item .pic { height: 140px; background: #efe9df center/cover no-repeat; display: grid; place-items: center; font-size: 2.2rem; color: #a69d8f; }
+.olist.grid .item .nm, .olist.grid .item .pr, .olist.grid .item .qty, .olist.grid .item .amt { padding: 0 .8rem; }
+.olist.grid .item .nm { padding-top: .6rem; flex: 1; }
+.olist.grid .item .pr { margin: .3rem 0; font-weight: 650; }
+.olist.grid .item .qty { padding-bottom: .4rem; }
+.olist.grid .item .amt { padding-bottom: .6rem; font-size: 12px; color: var(--brand-2); font-weight: 650; min-height: 1.4em; }
+.olist.list { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); }
+.olist.list .item { display: grid; grid-template-columns: 44px 1fr 150px 170px 110px; gap: .75rem; align-items: center; padding: .5rem .7rem; border-bottom: 1px solid var(--line); }
+.olist.list .item .pic { width: 44px; height: 44px; border-radius: 6px; background: #efe9df center/cover no-repeat; display: grid; place-items: center; font-size: 1.1rem; }
+.olist.list .item .pr, .olist.list .item .amt { text-align: right; }
+@media (max-width: 700px) { .olist.list .item { grid-template-columns: 44px 1fr; } .olist.list .item .pr, .olist.list .item .amt { text-align: left; } }
+.olist .item.has .qty input { border-color: var(--brand-2); background: #f0f7f3; }
+.pwbox code { font-size: 12px; background: #f3efe8; padding: .1rem .35rem; border-radius: 4px; }
