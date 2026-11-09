@@ -1,8 +1,8 @@
-import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=6";
-import * as admin from "./admin.js?v=6";
-import * as reports from "./reports.js?v=6";
-import * as coord from "./coordinator.js?v=6";
-import * as cust from "./customer.js?v=6";
+import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=7";
+import * as admin from "./admin.js?v=7";
+import * as reports from "./reports.js?v=7";
+import * as coord from "./coordinator.js?v=7";
+import * as cust from "./customer.js?v=7";
 
 const root = document.getElementById("root");
 

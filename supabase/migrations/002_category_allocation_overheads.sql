@@ -338,3 +338,27 @@ begin
   where rp.restaurant_id = r and rp.active and boh_category_on(r, c.id)
   order by c.sort, c.name, p.name;
 end $$;
+
+-- approving a request also switches on the product's category for that restaurant
+create or replace function public.boh_review_request(p_request uuid, p_approve boolean, p_margin numeric, p_note text default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare q boh_product_requests; v_cat uuid; v_default numeric;
+begin
+  if not boh_is_staff() then raise exception 'not allowed'; end if;
+  select * into q from boh_product_requests where id = p_request;
+  if not found then raise exception 'Request not found'; end if;
+  if p_approve and q.product_id is null then raise exception 'Link the request to a catalogue product before approving'; end if;
+  update boh_product_requests set status = case when p_approve then 'approved' else 'rejected' end,
+    margin_pct = p_margin, admin_note = p_note, reviewed_by = auth.uid(), reviewed_at = now()
+  where id = p_request;
+  if p_approve then
+    insert into boh_restaurant_products (restaurant_id, product_id, margin_override, active)
+    values (q.restaurant_id, q.product_id, p_margin, true)
+    on conflict (restaurant_id, product_id) do update set active = true, margin_override = excluded.margin_override;
+    select p.category_id, c.default_margin into v_cat, v_default
+      from boh_products p join boh_categories c on c.id = p.category_id where p.id = q.product_id;
+    insert into boh_restaurant_category_margins (restaurant_id, category_id, margin_pct, active)
+    values (q.restaurant_id, v_cat, v_default, true)
+    on conflict (restaurant_id, category_id) do update set active = true;
+  end if;
+end $$;

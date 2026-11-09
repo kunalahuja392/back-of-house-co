@@ -2,7 +2,7 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, todayIST, daysAgoIST, downloadCSV, promptBox,
-} from "./lib.js?v=6";
+} from "./lib.js?v=7";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -447,11 +447,11 @@ async function restaurantEditor(id, L, reload, startTab = 0) {
         <input id="ls" placeholder="Filter…" style="max-width:240px"></div>
       <div class="table-wrap"><table><thead><tr><th>Product</th><th>Category</th><th class="right">Best cost</th><th>Vendor</th><th class="right">Override %</th><th class="right">Effective</th><th class="right">Selling price</th><th>On list</th><th></th></tr></thead><tbody>
       ${rows.map((x) => `<tr data-n="${esc((x.product_name + " " + x.category_name).toLowerCase())}">
-        <td>${esc(x.product_name)} <span class="small muted">/${esc(x.unit)}</span></td><td>${esc(x.category_name)} ${x.category_active ? "" : '<span class="badge">category off</span>'}</td>
+        <td>${esc(x.product_name)} <span class="small muted">/${esc(x.unit)}</span></td><td>${esc(x.category_name)} ${x.category_active ? "" : `<span class="badge danger">category off — hidden from restaurant</span> <button class="btn sm" data-caton="${x.category_id}">Switch on</button>`}</td>
         <td class="right">${x.cost == null ? '<span class="badge danger">No rate</span>' : money(x.cost)}</td><td class="small">${esc(x.vendor_name || "")}</td>
         <td class="right"><input type="number" step="0.01" style="width:90px" data-ov="${x.rp_id}" value="${x.margin_override ?? ""}" placeholder="—"></td>
         <td class="right">${pct(x.effective_margin)}</td><td class="right"><b>${money(x.price)}</b></td>
-        <td><input type="checkbox" data-act="${x.rp_id}" ${x.rp_active ? "checked" : ""}></td>
+        <td><input type="checkbox" data-act="${x.rp_id}" ${x.rp_active ? "checked" : ""} title="Untick to hide from the restaurant"></td>
         <td><button class="btn sm danger" data-del="${x.rp_id}">Remove</button></td></tr>`).join("") || `<tr><td colspan="9" class="empty">No products allocated yet — use “Add products”.</td></tr>`}
       </tbody></table></div>`;
     $("#ls", body).oninput = (e) => $$("tr[data-n]", body).forEach((tr) => tr.classList.toggle("hidden", !tr.dataset.n.includes(e.target.value.toLowerCase())));
@@ -461,6 +461,12 @@ async function restaurantEditor(id, L, reload, startTab = 0) {
     }));
     $$("[data-act]", body).forEach((i) => (i.onchange = async () => { await q(sb.from("boh_restaurant_products").update({ active: i.checked }).eq("id", i.dataset.act)); toast("Updated"); }));
     $$("[data-del]", body).forEach((b) => (b.onclick = async () => { await q(sb.from("boh_restaurant_products").delete().eq("id", b.dataset.del)); listTab(); }));
+    $$("[data-caton]", body).forEach((b) => (b.onclick = async () => {
+      const c = L.cats.find((x) => x.id === b.dataset.caton);
+      const row = { restaurant_id: id, category_id: b.dataset.caton, margin_pct: margins[b.dataset.caton]?.margin_pct ?? c?.default_margin ?? 0, active: true };
+      await q(sb.from("boh_restaurant_category_margins").upsert(row));
+      margins[row.category_id] = row; toast(`${c?.name || "Category"} switched on`); listTab(); reload();
+    }));
   }
 
   async function addProductsTab() {
