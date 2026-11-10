@@ -2,7 +2,7 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox, orderAlloc, canDeliver,
-} from "./lib.js?v=15";
+} from "./lib.js?v=16";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -1374,7 +1374,9 @@ export async function settings(el) {
 const BOT_FOLDER_URL = "https://github.com/kunalahuja392/back-of-house-co/tree/main/whatsapp-bot";
 async function notificationSettings(el) {
   const s = state.settings;
-  const cfg = (await q(sb.rpc("boh_notify_config")))?.[0] || {};
+  const [cfgRows, cloudSaved] = await Promise.all([q(sb.rpc("boh_notify_config")), q(sb.rpc("boh_wa_cloud_configured"))]);
+  const cfg = cfgRows?.[0] || {};
+  const cloud = s.wa_provider === "cloud";
   const online = s.bot_last_seen && Date.now() - new Date(s.bot_last_seen) < 3 * 60000;
   el.insertAdjacentHTML("beforeend", `
     <div class="card" id="nf" style="margin-top:1rem">
@@ -1398,7 +1400,28 @@ async function notificationSettings(el) {
             <input id="brevo" type="password" placeholder="${cfg.brevo_configured ? "Saved — paste a new key to replace it" : "xkeysib-…"}" autocomplete="off"></div>
           <div class="row"><input id="testemail" type="email" value="${esc(state.me.email)}" style="flex:1"><button class="btn sm" id="sendtestemail" type="button">Send test email</button></div>
         </div>
-        <div class="card" style="padding:.8rem;margin-top:0"><b>💬 WhatsApp — via your WhatsApp Web bot</b>
+        <div class="card" style="padding:.8rem;margin-top:0"><b>💬 WhatsApp</b>
+          <div class="row" style="gap:1rem;margin:.4rem 0">
+            <label class="row" style="margin:0;font-weight:400"><input type="radio" name="wa_provider" value="cloud" ${cloud ? "checked" : ""}> Official WhatsApp (Meta) <span class="small muted">≈ ₹0.145 / message</span></label>
+            <label class="row" style="margin:0;font-weight:400"><input type="radio" name="wa_provider" value="bot" ${cloud ? "" : "checked"}> WhatsApp Web bot <span class="small muted">free, unofficial</span></label></div>
+          <div id="wacloud" class="${cloud ? "" : "hidden"}">
+            <ol class="small muted" style="padding-left:1.1rem;margin:.4rem 0">
+              <li><a href="https://developers.facebook.com/apps/create/" target="_blank" rel="noopener">Meta for Developers</a> → Create app → Business → add <b>WhatsApp</b>.</li>
+              <li>WhatsApp → API Setup: add your business phone number and verify it; copy the <b>Phone number ID</b> and <b>WhatsApp Business Account ID</b>.</li>
+              <li>Business settings → System users → add an admin user → assign the app and the WhatsApp account → <b>Generate token</b> (never expires, permissions whatsapp_business_messaging + whatsapp_business_management).</li>
+              <li>WhatsApp Manager → add a payment method.</li>
+              <li>Paste below, Save, then <b>Create message templates</b> and wait for Meta to approve them (minutes to a day).</li>
+            </ol>
+            <div class="form-grid">
+              <div class="field"><label>Phone number ID</label><input name="wa_phone_number_id" value="${esc(s.wa_phone_number_id || "")}" inputmode="numeric"></div>
+              <div class="field"><label>WhatsApp Business Account ID</label><input name="wa_waba_id" value="${esc(s.wa_waba_id || "")}" inputmode="numeric"></div>
+            </div>
+            <div class="field"><label>Permanent access token ${cloudSaved ? '<span class="badge ok">saved</span>' : '<span class="badge warn">not set</span>'}</label>
+              <input id="watoken" type="password" autocomplete="off" placeholder="${cloudSaved ? "Saved — paste a new token to replace it" : "EAAG…"}"></div>
+            <div class="row"><button class="btn sm" type="button" id="wastatus">Check setup</button><button class="btn sm" type="button" id="watpl">Create message templates</button></div>
+            <div id="wainfo" class="small" style="margin-top:.5rem"></div>
+          </div>
+          <div id="wabot" class="${cloud ? "hidden" : ""}">
           <div style="margin:.4rem 0">${online ? `<span class="badge ok">Bot online</span> <span class="small muted">last seen ${fmtDT(s.bot_last_seen)}</span>`
             : `<span class="badge danger">Bot offline</span> <span class="small muted">${s.bot_last_seen ? "last seen " + fmtDT(s.bot_last_seen) : "never connected"}</span>`}</div>
           <div class="notice small" style="margin:.4rem 0">⚠️ Unofficial — WhatsApp may ban the number. Use a separate business SIM.</div>
@@ -1409,7 +1432,8 @@ async function notificationSettings(el) {
           </ol>
           <div class="field"><label>Bot key</label><div class="row" style="flex-wrap:nowrap"><input id="botkey" type="password" readonly value="${esc(cfg.bot_secret || "")}">
             <button class="btn sm" type="button" id="showkey">👁</button><button class="btn sm" type="button" id="copykey">Copy</button><button class="btn sm" type="button" id="newkey">New key</button></div></div>
-          <div class="row"><input id="testphone" value="${esc(state.me.phone || "")}" placeholder="WhatsApp number" style="flex:1"><button class="btn sm" id="sendtestwa" type="button">Send test WhatsApp</button></div>
+          </div>
+          <div class="row" style="margin-top:.5rem"><input id="testphone" value="${esc(state.me.phone || "")}" placeholder="WhatsApp number" style="flex:1"><button class="btn sm" id="sendtestwa" type="button">Send test WhatsApp</button></div>
         </div>
       </div>
       <h3 style="margin-top:1rem">📊 Daily report to super admins</h3>
@@ -1423,6 +1447,31 @@ async function notificationSettings(el) {
         <span class="grow"></span><button class="btn primary" id="savenf" type="button">Save notification settings</button></div>
     </div>`);
   const nf = $("#nf", el);
+  $$("[name=wa_provider]", nf).forEach((r) => (r.onchange = () => {
+    const c = $("[name=wa_provider]:checked", nf).value === "cloud";
+    $("#wacloud", nf).classList.toggle("hidden", !c); $("#wabot", nf).classList.toggle("hidden", c);
+  }));
+  const TPL_BADGE = { APPROVED: "ok", PENDING: "warn", REJECTED: "danger", PAUSED: "danger", DISABLED: "danger" };
+  const showWa = (d) => {
+    const ph = d.phone || {};
+    const tpls = Array.isArray(d.templates) ? d.templates : [];
+    $("#wainfo", nf).innerHTML = `
+      <div>${ph.error ? `<span class="badge danger">Phone</span> ${esc(ph.error)}` : `<span class="badge ok">Phone</span> ${esc(ph.display_phone_number || "")} · ${esc(ph.verified_name || "")}
+        ${ph.name_status ? ` · name ${esc(ph.name_status)}` : ""}${ph.quality_rating ? ` · quality ${esc(ph.quality_rating)}` : ""}${ph.messaging_limit_tier ? ` · limit ${esc(ph.messaging_limit_tier)}` : ""}`}</div>
+      ${d.error ? `<div style="color:var(--danger)">${esc(d.error)}</div>` : ""}
+      ${d.templates?.error ? `<div style="color:var(--danger)">Templates: ${esc(d.templates.error)}</div>` : ""}
+      ${(d.created || []).filter((c) => !c.ok).map((c) => `<div style="color:var(--danger)">${esc(c.name)}: ${esc(c.error || "error")}</div>`).join("")}
+      <div style="margin-top:.3rem">${["boh_order_update", "boh_team_alert", "boh_daily_report"].map((n) => { const t = tpls.find((x) => x.name === n);
+        return `<div>${esc(n)}: ${t ? `<span class="badge ${TPL_BADGE[t.status] || "info"}">${esc(t.status)}</span> ${t.rejected_reason && t.rejected_reason !== "NONE" ? esc(t.rejected_reason) : ""}` : '<span class="badge">not created</span>'}</div>`; }).join("")}</div>`;
+  };
+  const waCall = async (action) => {
+    $("#wainfo", nf).textContent = "Checking with Meta…";
+    const { data, error } = await sb.functions.invoke("boh-notify", { body: { action } });
+    if (error) { let m = error.message; try { m = (await error.context.json()).error || m; } catch {} $("#wainfo", nf).innerHTML = `<span style="color:var(--danger)">${esc(m)}</span>`; return; }
+    showWa(data);
+  };
+  $("#wastatus", nf).onclick = () => waCall("wa_status");
+  $("#watpl", nf).onclick = () => waCall("wa_create_templates");
   $("#showkey", nf).onclick = () => { const i = $("#botkey", nf); i.type = i.type === "password" ? "text" : "password"; };
   $("#copykey", nf).onclick = async () => { try { await navigator.clipboard.writeText($("#botkey", nf).value); toast("Bot key copied"); } catch { toast("Select the key and copy it", true); } };
   $("#newkey", nf).onclick = async () => {
@@ -1432,11 +1481,14 @@ async function notificationSettings(el) {
   $("#savenf", nf).onclick = async () => {
     const f = formData(nf);
     const patch = { notify_email: f.notify_email, notify_whatsapp: f.notify_whatsapp, email_from: f.email_from, email_from_name: f.email_from_name,
+      wa_provider: $("[name=wa_provider]:checked", nf).value, wa_phone_number_id: (f.wa_phone_number_id || "").trim() || null, wa_waba_id: (f.wa_waba_id || "").trim() || null,
       report_time: f.report_time || "21:00", report_emails: f.report_emails, report_phones: f.report_phones, updated_at: new Date().toISOString() };
     const row = await q(sb.from("boh_settings").update(patch).eq("id", 1).select().single());
     state.settings = row;
     const key = $("#brevo", nf).value.trim();
     if (key) { await q(sb.rpc("boh_set_notify_secret", { p_key: "brevo_api_key", p_value: key })); $("#brevo", nf).value = ""; }
+    const wt = $("#watoken", nf).value.trim();
+    if (wt) { await q(sb.rpc("boh_set_notify_secret", { p_key: "wa_cloud_token", p_value: wt })); $("#watoken", nf).value = ""; }
     toast("Notification settings saved"); settings(el);
   };
   const sendNow = () => sb.functions.invoke("boh-notify", { body: {} }).catch(() => {});
@@ -1448,7 +1500,8 @@ async function notificationSettings(el) {
   };
   $("#sendtestwa", nf).onclick = async () => {
     await q(sb.rpc("boh_test_notification", { p_channel: "whatsapp", p_address: $("#testphone", nf).value }));
-    toast(online ? "Test WhatsApp queued — it should arrive within a minute" : "Test queued — it will send when the bot is online");
+    if (cloud) { sendNow(); toast("Test WhatsApp sent through Meta — check the phone (needs approved templates)"); }
+    else toast(online ? "Test WhatsApp queued — it should arrive within a minute" : "Test queued — it will send when the bot is online");
   };
   $("#preview", nf).onclick = async () => {
     const text = await q(sb.rpc("boh_report_preview", {}));
