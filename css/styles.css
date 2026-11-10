@@ -163,3 +163,8 @@ a.btn { text-decoration: none; }
 .paymode { display: flex; gap: .5rem; align-items: flex-start; border: 1px solid var(--line); border-radius: 10px; padding: .6rem .8rem; cursor: pointer; flex: 1; min-width: 200px; margin: 0; color: var(--ink); font-weight: 400; }
 .paymode:has(input:checked) { border-color: var(--brand-2); background: #f0f7f3; }
 .slide-price { background: var(--accent); color: #fff; padding: .1rem .5rem; border-radius: 6px; margin-left: .3rem; white-space: nowrap; }
+
+/* "Found it cheaper?" link on ordering list items */
+.linkbtn { background: none; border: 0; padding: 0; color: var(--brand-2, #7a5a2f); cursor: pointer; text-decoration: underline; font: inherit; }
+.linkbtn.small { font-size: .78rem; margin-top: .15rem; }
+.olist .item .linkbtn { display: inline-block; }

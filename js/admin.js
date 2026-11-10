@@ -1,8 +1,8 @@
 import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
-  OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox,
-} from "./lib.js?v=14";
+  OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox, orderAlloc, canDeliver,
+} from "./lib.js?v=15";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -49,13 +49,16 @@ async function okFixedPrice(price, cost) {
 // ====================================================================== DASHBOARD
 export async function dashboard(el) {
   const monthStart = todayIST().slice(0, 8) + "01";
-  const [orders, reqs, comps, ohs, L] = await Promise.all([
+  const [orders, reqs, comps, ohs, L, bals, prs] = await Promise.all([
     q(sb.from("boh_orders").select(ORDER_SELECT).gte("created_at", daysAgoIST(45) + "T00:00:00+05:30").order("created_at", { ascending: false })),
     q(sb.from("boh_product_requests").select("id").eq("status", "pending")),
     q(sb.from("boh_complaints").select("id").neq("status", "resolved")),
     q(sb.from("boh_order_overheads").select("amount, kind, ord:boh_orders!inner(created_at,status)").gte("ord.created_at", monthStart + "T00:00:00+05:30").neq("ord.status", "cancelled")),
     lookups(),
+    q(sb.rpc("boh_balances")),
+    q(sb.from("boh_price_reports").select("id").eq("status", "new")),
   ]);
+  const bsum = (k) => bals.reduce((a, b) => a + Number(b[k]), 0);
   const today = todayIST();
   const isToday = (d) => new Date(new Date(d).getTime() + 330 * 60000).toISOString().slice(0, 10) === today;
   const live = orders.filter((o) => o.status !== "cancelled");
@@ -73,14 +76,20 @@ export async function dashboard(el) {
       <div class="card stat"><div class="l">Awaiting allocation</div><div class="v">${live.filter((o) => o.status === "placed").length}</div></div>
       <div class="card stat"><div class="l">Overdue</div><div class="v" style="color:var(--danger)">${overdue.length}</div></div>
       <div class="card stat"><div class="l">Payments to verify</div><div class="v" style="color:var(--warn)">${live.filter((o) => o.payment_status === "under_review").length}</div><div class="small muted"><a href="#/orders">Orders → Payment: Under approval</a></div></div>
-      <div class="card stat"><div class="l">Unpaid (delivered / pre-pay)</div><div class="v">${money(live.filter((o) => o.payment_status !== "paid" && (o.payment_mode === "prepaid" || o.status === "delivered")).reduce((a, o) => a + Number(o.total), 0))}</div></div>
+      <div class="card stat"><div class="l">Pending balance (all restaurants)</div><div class="v">${money(bsum("pending"))}</div>
+        <div class="small muted">Due now ${money(bsum("due"))} · <span style="color:var(--danger)">Overdue ${money(bsum("overdue"))}</span> · Under approval ${money(bsum("under_review"))} · Not delivered yet ${money(bsum("upcoming"))}</div></div>
       <div class="card stat"><div class="l">Sales this month</div><div class="v">${money(sales)}</div></div>
       <div class="card stat"><div class="l">Gross margin this month</div><div class="v">${money(sales - cost)}</div><div class="small muted">${sales ? pct(((sales - cost) / sales) * 100) : ""}</div></div>
       <div class="card stat"><div class="l">Overheads this month</div><div class="v">${money(oh)}</div><div class="small muted">Porter ${money(porter)}</div></div>
       <div class="card stat"><div class="l">Net margin this month</div><div class="v">${money(sales - cost - oh)}</div><div class="small muted">${sales ? pct(((sales - cost - oh) / sales) * 100) : ""}</div></div>
       <div class="card stat"><div class="l">Pending product requests</div><div class="v">${reqs.length}</div></div>
       <div class="card stat"><div class="l">Open complaints</div><div class="v">${comps.length}</div></div>
+      <div class="card stat"><div class="l">Cheaper vendors reported</div><div class="v">${prs.length}</div><div class="small muted"><a href="#/pricereports">Review</a></div></div>
     </div>
+    ${bals.length ? `<div class="card" style="margin-top:1rem"><h2>Pending balance by restaurant</h2><div class="table-wrap"><table><thead><tr><th>Restaurant</th><th class="right">Due now</th><th class="right">Overdue</th><th class="right">Under approval</th><th class="right">Not delivered yet</th><th class="right">Total pending</th></tr></thead><tbody>
+      ${bals.sort((a, b) => b.pending - a.pending).map((b) => `<tr><td>${esc(L.restMap[b.restaurant_id]?.name || "—")}</td><td class="right">${money(b.due)}</td>
+        <td class="right" style="color:${Number(b.overdue) ? "var(--danger)" : "inherit"}">${money(b.overdue)}</td><td class="right">${money(b.under_review)}</td><td class="right">${money(b.upcoming)}</td><td class="right"><b>${money(b.pending)}</b></td></tr>`).join("")}
+      </tbody></table></div></div>` : ""}
     <div class="card" style="margin-top:1rem"><h2>Needs attention</h2>
       ${orderTable([...live.filter((o) => o.payment_status === "under_review"), ...overdue, ...live.filter((o) => o.status === "placed" && !overdue.includes(o))].filter((o, i, a) => a.indexOf(o) === i).slice(0, 20), L)}</div>`;
   bindOrderTable(el, L, () => dashboard(el));
@@ -88,13 +97,14 @@ export async function dashboard(el) {
 
 // ====================================================================== ORDERS
 function coordNames(o, L) {
-  const names = [...new Set((o.allocs || []).map((a) => L.teamMap[a.coordinator_id]?.full_name || "—"))];
+  const ids = o.coordinator_id ? [o.coordinator_id, ...(o.allocs || []).map((a) => a.coordinator_id)] : (o.allocs || []).map((a) => a.coordinator_id);
+  const names = [...new Set(ids.map((id) => L.teamMap[id]?.full_name || "—"))];
   return names.length ? esc(names.join(", ")) : '<span class="muted">Unassigned</span>';
 }
 
 function orderTable(rows, L) {
   if (!rows.length) return `<div class="empty">No orders here.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>#</th><th>Restaurant</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Status</th><th>Payment</th><th>Coordinators</th><th>SLA</th><th></th></tr></thead><tbody>
+  return `<div class="table-wrap"><table><thead><tr><th>#</th><th>Restaurant</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Status</th><th>Payment</th><th>Coordinator</th><th>SLA</th><th></th></tr></thead><tbody>
     ${rows.map((o) => `<tr>
       <td><b>${o.order_no}</b></td>
       <td>${esc(L.restMap[o.restaurant_id]?.name || "—")}</td>
@@ -116,36 +126,30 @@ function bindOrderTable(el, L, reload) {
   $$("[data-view]", el).forEach((b) => (b.onclick = () => orderModal(b.dataset.view, reload)));
 }
 
-// category-wise allocation: one pick at the top fills every category, each can be changed
+// one coordinator handles the whole order
 async function allocateModal(orderId, L, reload) {
   const [o, items] = await Promise.all([
     q(sb.from("boh_orders").select(ORDER_SELECT).eq("id", orderId).single()),
-    q(sb.from("boh_order_items").select("category_id, category_name, line_total").eq("order_id", orderId)),
+    q(sb.from("boh_order_items").select("category_name, vendor_name, line_total").eq("order_id", orderId)),
   ]);
-  const cats = {};
-  items.forEach((i) => { const c = (cats[i.category_id] ||= { id: i.category_id, name: i.category_name, n: 0, amt: 0 }); c.n++; c.amt += Number(i.line_total); });
-  const existing = Object.fromEntries((o.allocs || []).map((a) => [a.category_id, a]));
+  const cur = o.coordinator_id || o.allocs?.[0]?.coordinator_id || "";
   const people = L.team.filter((t) => t.active);
-  const opts = (sel) => `<option value="">— choose —</option>` + people.map((t) => `<option value="${t.id}" ${t.id === sel ? "selected" : ""}>${esc(t.full_name)} (${t.role.replace("_", " ")})${t.phone ? " · " + esc(t.phone) : ""}</option>`).join("");
+  const cats = [...new Set(items.map((i) => i.category_name))];
+  const vendors = [...new Set(items.map((i) => i.vendor_name || "No vendor"))];
   const m = modal({
-    title: `Allocate order #${o.order_no}`,
+    title: `${o.status === "placed" ? "Allocate" : "Reassign"} order #${o.order_no}`,
     body: `<p class="muted">${esc(L.restMap[o.restaurant_id]?.name)} · placed ${fmtDT(o.created_at)} · ${dueBadge(o)}</p>
-      <div class="field"><label>Coordinator for all categories</label><select id="all">${opts("")}</select>
-        <div class="small muted">Picking someone here fills every category below. You can then change any single category.</div></div>
-      <table><thead><tr><th>Category</th><th class="right">Items</th><th class="right">Value</th><th>Coordinator</th><th></th></tr></thead><tbody>
-      ${Object.values(cats).map((c) => `<tr><td><b>${esc(c.name)}</b></td><td class="right">${c.n}</td><td class="right">${money(c.amt)}</td>
-        <td><select data-cat="${c.id}">${opts(existing[c.id]?.coordinator_id)}</select></td>
-        <td class="small">${existing[c.id] ? statusBadge(existing[c.id].status) : ""}</td></tr>`).join("")}
-      </tbody></table>`,
-    footer: `<button class="btn primary" id="go">Save allocation</button>`,
+      <p class="small">${items.length} items · ${money(o.total)} · ${cats.length} categor${cats.length > 1 ? "ies" : "y"} · ${vendors.length} vendor${vendors.length > 1 ? "s" : ""}: ${esc(vendors.join(", "))}</p>
+      <div class="field"><label>Coordinator for this order</label><select id="co"><option value="">— choose —</option>
+        ${people.map((t) => `<option value="${t.id}" ${t.id === cur ? "selected" : ""}>${esc(t.full_name)} (${t.role.replace("_", " ")})${t.phone ? " · " + esc(t.phone) : ""}</option>`).join("")}</select>
+        <div class="small muted">They get the full order with each vendor's numbers, and must acknowledge within ${state.settings.sla_ack_hrs} working hr.</div></div>`,
+    footer: `<button class="btn primary" id="go">${o.status === "placed" ? "Allocate" : "Save"}</button>`,
   });
-  $("#all", m.el).onchange = (e) => { if (e.target.value) $$("[data-cat]", m.el).forEach((s) => (s.value = e.target.value)); };
   $("#go", m.el).onclick = async () => {
-    const map = $$("[data-cat]", m.el).filter((s) => s.value).map((s) => ({ category_id: s.dataset.cat, coordinator_id: s.value }));
-    if (!map.length) return toast("Choose at least one coordinator", true);
-    await q(sb.rpc("boh_allocate_order", { p_order: orderId, p_map: map }));
-    const left = Object.keys(cats).length - map.length;
-    toast(left ? `Saved — ${left} categor${left > 1 ? "ies" : "y"} still unallocated` : "Order allocated");
+    const co = $("#co", m.el).value;
+    if (!co) return toast("Choose a coordinator", true);
+    await q(sb.rpc("boh_allocate_order_to", { p_order: orderId, p_coordinator: co }));
+    toast("Order allocated to " + (L.teamMap[co]?.full_name || "coordinator"));
     m.close(); refreshCounts(); reload?.();
   };
 }
@@ -195,6 +199,69 @@ export async function advanceAlloc(alloc, step, done) {
   refreshCounts(); done?.();
 }
 
+// move the whole order forward; delivery asks for overhead charges
+export async function advanceOrder(o, step, done) {
+  let note = null, overheads = [];
+  if (["followup1", "followup2"].includes(step)) {
+    note = await promptBox(`Order #${o.order_no} — ${step === "followup1" ? "1st" : "2nd"} follow-up`, "What did the vendor(s) say?");
+    if (note === null) return;
+  }
+  if (step === "delivered") {
+    overheads = await overheadForm(`Order #${o.order_no} delivered — overheads`, true);
+    if (overheads === null) return;
+  }
+  await q(sb.rpc("boh_advance_order_all", { p_order: o.id, p_step: step, p_note: note, p_overheads: overheads }));
+  toast(step === "delivered" ? "Marked delivered" : "Updated");
+  refreshCounts(); done?.();
+}
+
+// vendor not responding: move its lines to another vendor, skip it for this order or disable it
+export async function changeVendor(o, vendorId, lines, done) {
+  const opts = await q(sb.rpc("boh_vendor_options", { p_order: o.id }));
+  const pids = new Set(lines.map((l) => l.product_id));
+  const alts = opts.filter((x) => pids.has(x.product_id) && x.vendor_id !== vendorId);
+  const byVendor = {};
+  alts.forEach((x) => { const v = (byVendor[x.vendor_id] ||= { id: x.vendor_id, name: x.vendor_name, phones: x.phones, style: x.delivery_style, skipped: x.skipped, rates: {} }); v.rates[x.product_id] = Number(x.rate); });
+  const vlist = Object.values(byVendor);
+  // what "next cheapest" would pick per line (skipped vendors excluded)
+  const auto = (pid) => alts.filter((x) => x.product_id === pid && !x.skipped).sort((a, b) => a.rate - b.rate)[0];
+  const fromName = lines[0]?.vendor_name || "this vendor";
+  const marginTxt = (price, rate) => rate ? ((price / rate - 1) * 100) : null;
+  const preview = (target) => lines.map((l) => {
+    const pick = target ? (byVendor[target]?.rates[l.product_id] != null ? { vendor_name: byVendor[target].name, rate: byVendor[target].rates[l.product_id] } : null) : auto(l.product_id);
+    const mg = pick ? marginTxt(Number(l.unit_price), Number(pick.rate)) : null;
+    return `<tr><td>${esc(l.product_name)}</td><td class="right">${money(l.unit_cost)}</td>
+      <td>${pick ? esc(pick.vendor_name) : '<span class="badge danger">No other vendor</span>'}</td>
+      <td class="right">${pick ? money(pick.rate) : "—"}</td>
+      <td class="right">${mg == null ? "—" : `<span style="color:${mg < 0 ? "var(--danger)" : mg < 10 ? "var(--warn)" : "inherit"}">${mg.toFixed(1)}%</span>`}</td></tr>`;
+  }).join("");
+  const m = modal({
+    wide: true,
+    title: `Change vendor — ${fromName}`,
+    body: `<p class="muted">Order #${o.order_no}. The restaurant's price does not change; only who we buy from.</p>
+      <div class="field"><label>What should happen to ${esc(fromName)}?</label>
+        <label class="row" style="gap:.4rem;font-weight:400"><input type="radio" name="mode" value="skip" checked> Skip for this order only <span class="small muted">(not responding today — still used next time)</span></label>
+        <label class="row" style="gap:.4rem;font-weight:400"><input type="radio" name="mode" value="disable"> Disable this vendor <span class="small muted">(made inactive — not used for any future order until re-activated)</span></label></div>
+      <div class="field"><label>Move these items to</label><select id="tg"><option value="">Next cheapest vendor automatically</option>
+        ${vlist.map((v) => `<option value="${v.id}">${esc(v.name)}${v.skipped ? " (skipped earlier)" : ""} · ${Object.keys(v.rates).length}/${pids.size} items</option>`).join("")}</select></div>
+      <div class="field"><label>Reason</label><input id="rs" placeholder="e.g. Not picking up since 11 am"></div>
+      <table><thead><tr><th>Item</th><th class="right">Now</th><th>New vendor</th><th class="right">New rate</th><th class="right">Our margin</th></tr></thead><tbody id="pv">${preview("")}</tbody></table>
+      <div id="vph" class="small" style="margin-top:.5rem"></div>`,
+    footer: `<button class="btn primary" id="go">Change vendor</button>`,
+  });
+  const showPh = () => { const v = byVendor[$("#tg", m.el).value]; $("#vph", m.el).innerHTML = v ? `📞 ${telLinks(v.phones)} · ${esc(DELIVERY_LABEL[v.style] || "")}` : ""; };
+  $("#tg", m.el).onchange = () => { $("#pv", m.el).innerHTML = preview($("#tg", m.el).value); showPh(); };
+  $("#go", m.el).onclick = async () => {
+    const mode = $("input[name=mode]:checked", m.el).value;
+    if (mode === "disable" && !(await confirmBox(`Disable ${fromName}? It will not be used for any future order until an admin re-activates it in Vendors.`))) return;
+    const stuck = await q(sb.rpc("boh_reassign_vendor", { p_order: o.id, p_vendor: vendorId, p_mode: mode, p_target: $("#tg", m.el).value || null, p_reason: $("#rs", m.el).value.trim() || null }));
+    m.close();
+    if (stuck?.length) toast(`Changed, but no other vendor for: ${stuck.map((x) => x.product_name).join(", ")} — still with ${fromName}`, true);
+    else toast(mode === "disable" ? `${fromName} disabled and items moved` : `Items moved — ${fromName} skipped for this order`);
+    done?.();
+  };
+}
+
 // returns [{kind, amount, note}] or null if cancelled
 function overheadForm(title, forDelivery) {
   return new Promise((res) => {
@@ -222,41 +289,34 @@ function overheadForm(title, forDelivery) {
 }
 
 export async function orderModal(orderId, reload) {
-  const [o, items, events, ohs] = await Promise.all([
-    q(sb.from("boh_orders").select("*, allocs:boh_order_allocations(*, coordinator:boh_users!boh_order_allocations_coordinator_id_fkey(full_name,phone)), restaurant:boh_restaurants(name,phone,address)").eq("id", orderId).single()),
-    q(sb.from("boh_order_items").select("*, vendor:boh_vendors(name,phones,delivery_style)").eq("order_id", orderId).order("vendor_name").order("product_name")),
+  const [o, items, events, ohs, skips] = await Promise.all([
+    q(sb.from("boh_orders").select("*, coordinator:boh_users!boh_orders_coordinator_id_fkey(full_name,phone), allocs:boh_order_allocations(*, coordinator:boh_users!boh_order_allocations_coordinator_id_fkey(full_name,phone)), restaurant:boh_restaurants(name,phone,address)").eq("id", orderId).single()),
+    q(sb.from("boh_order_items").select("*, vendor:boh_vendors(name,phones,delivery_style,active)").eq("order_id", orderId).order("vendor_name").order("product_name")),
     q(sb.from("boh_order_events").select("*, actor:boh_users(full_name)").eq("order_id", orderId).order("created_at")),
     q(sb.from("boh_order_overheads").select("*, by:boh_users(full_name)").eq("order_id", orderId).order("created_at")),
+    q(sb.from("boh_order_vendor_skips").select("*, vendor:boh_vendors(name)").eq("order_id", orderId)),
   ]);
   const staff = isStaff();
-  const onOrder = (o.allocs || []).some((a) => a.coordinator_id === state.me.id);
-  const allocByCat = Object.fromEntries((o.allocs || []).map((a) => [a.category_id, a]));
-  const cats = {};
-  items.forEach((i) => (cats[i.category_id] ||= { name: i.category_name, items: [] }).items.push(i));
+  const onOrder = o.coordinator_id === state.me.id || (o.allocs || []).some((a) => a.coordinator_id === state.me.id);
+  const can = (staff || onOrder) && !["cancelled", "paid", "delivered"].includes(o.status);
+  const A = orderAlloc(o);
+  const coName = o.coordinator?.full_name || A?.coordinator?.full_name;
+  const coPhone = o.coordinator?.phone || A?.coordinator?.phone;
   const ohTotal = ohs.reduce((a, x) => a + Number(x.amount), 0);
+  const byVendor = {};
+  items.forEach((i) => (byVendor[i.vendor_id || "x"] ||= { id: i.vendor_id, v: i.vendor, name: i.vendor_name, style: i.delivery_style, lines: [] }).lines.push(i));
+  const skipped = skips.filter((x) => x.vendor);
+  const next = A && o.status !== "placed" ? NEXT_STEP[A.status] : null;
 
-  const catSection = (cid, c) => {
-    const a = allocByCat[cid];
-    const mine = a && (staff || a.coordinator_id === state.me.id);
-    const next = a && NEXT_STEP[a.status];
-    const byVendor = {};
-    c.items.forEach((i) => (byVendor[i.vendor_id || "x"] ||= { v: i.vendor, name: i.vendor_name, style: i.delivery_style, lines: [] }).lines.push(i));
-    return `<div class="card" style="padding:.8rem">
-      <div class="row between"><h3 style="margin:0">${esc(c.name)}</h3>
-        <div class="row">${a ? `${statusBadge(a.status)} <span class="small">👤 ${esc(a.coordinator?.full_name || "")} ${a.coordinator?.phone ? "· " + telLinks([a.coordinator.phone]) : ""}</span>` : '<span class="badge warn">Not allocated</span>'}</div></div>
-      ${Object.values(byVendor).map((g) => `
-        <div style="margin-top:.6rem"><div class="row between small"><b>${esc(g.name || "No vendor")}</b><span>${esc(DELIVERY_LABEL[g.style] || "")} · 📞 ${telLinks(g.v?.phones)}</span></div>
-        <table><thead><tr><th>Item</th><th class="right">Qty</th>${staff ? '<th class="right">Cost</th><th class="right">Margin</th>' : ""}<th class="right">Price</th><th class="right">Total</th></tr></thead><tbody>
-        ${g.lines.map((i) => `<tr><td>${esc(i.product_name)}</td><td class="right">${num(i.qty, 3)} ${esc(i.unit || "")}</td>
-          ${staff ? `<td class="right">${money(i.unit_cost)}</td><td class="right">${pct(i.margin_pct)}</td>` : ""}
-          <td class="right">${money(i.unit_price)}</td><td class="right">${money(i.line_total)}</td></tr>`).join("")}</tbody></table></div>`).join("")}
-      ${a ? `<details style="margin-top:.6rem"><summary class="small">Timeline</summary>${stepsHTML(allocSteps(o, a))}
-        ${a.followup1_note ? `<p class="small"><b>1st follow-up:</b> ${esc(a.followup1_note)}</p>` : ""}${a.followup2_note ? `<p class="small"><b>2nd follow-up:</b> ${esc(a.followup2_note)}</p>` : ""}</details>` : ""}
-      ${mine && o.status !== "cancelled" ? `<div class="row" style="justify-content:flex-end;margin-top:.5rem">
-        ${["vendor_ordered", "followup1"].includes(a.status) ? `<button class="btn sm" data-adv="${a.id}" data-step="delivered">Mark delivered</button>` : ""}
-        ${next ? `<button class="btn sm primary" data-adv="${a.id}" data-step="${next}">${STEP_BUTTON[next]}</button>` : ""}</div>` : ""}
-    </div>`;
-  };
+  const vendorSection = (g) => `<div class="card" style="padding:.8rem;margin-bottom:.6rem">
+      <div class="row between"><div><b>🏪 ${esc(g.name || "No vendor")}</b> <span class="badge info">${esc(DELIVERY_LABEL[g.style] || "")}</span>
+        ${g.v && g.v.active === false ? '<span class="badge danger">Disabled</span>' : ""}
+        <div class="small phones">📞 ${telLinks(g.v?.phones)}</div></div>
+        ${can && g.id ? `<button class="btn sm" data-chv="${g.id}" title="Vendor not responding? Move these items to another vendor">⇄ Change vendor</button>` : ""}</div>
+      <table style="margin-top:.4rem"><thead><tr><th>Item</th><th>Category</th><th class="right">Qty</th>${staff ? '<th class="right">Cost</th><th class="right">Margin</th>' : ""}<th class="right">Price</th><th class="right">Total</th></tr></thead><tbody>
+      ${g.lines.map((i) => `<tr><td>${esc(i.product_name)}</td><td class="small muted">${esc(i.category_name || "")}</td><td class="right">${num(i.qty, 3)} ${esc(i.unit || "")}</td>
+        ${staff ? `<td class="right">${money(i.unit_cost)}</td><td class="right">${pct(i.margin_pct)}</td>` : ""}
+        <td class="right">${money(i.unit_price)}</td><td class="right">${money(i.line_total)}</td></tr>`).join("")}</tbody></table></div>`;
 
   const m = modal({
     wide: true,
@@ -266,7 +326,19 @@ export async function orderModal(orderId, reload) {
         <span class="muted">Placed ${fmtDT(o.created_at)} · Delivery ${fmtD(o.delivery_date)} · ${esc(o.restaurant?.phone || "")} · ${esc(o.restaurant?.address || "")}</span></div>
       ${o.notes ? `<div class="notice">Restaurant note: ${esc(o.notes)}</div>` : ""}
       <div class="grid c2" style="align-items:start">
-        <div>${Object.entries(cats).map(([cid, c]) => catSection(cid, c)).join("")}
+        <div>
+          <div class="card" style="padding:.8rem;margin-bottom:.6rem"><div class="row between">
+            <div>${coName ? `👤 <b>${esc(coName)}</b> ${coPhone ? "· " + telLinks([coPhone]) : ""}` : '<span class="badge warn">Not allocated</span>'}</div>
+            <div class="row">${A ? statusBadge(A.status) : ""}</div></div>
+            ${A ? `<details style="margin-top:.5rem"><summary class="small">Coordinator timeline</summary>${stepsHTML(allocSteps(o, A))}
+              ${A.followup1_note ? `<p class="small"><b>1st follow-up:</b> ${esc(A.followup1_note)}</p>` : ""}${A.followup2_note ? `<p class="small"><b>2nd follow-up:</b> ${esc(A.followup2_note)}</p>` : ""}</details>` : ""}
+            ${can && A && o.status !== "placed" ? `<div class="row" style="justify-content:flex-end;margin-top:.5rem">
+              ${canDeliver(A.status) && next !== "delivered" ? `<button class="btn sm" data-oadv="delivered">Mark delivered</button>` : ""}
+              ${next ? `<button class="btn sm primary" data-oadv="${next}">${STEP_BUTTON[next]}</button>` : ""}</div>` : ""}
+          </div>
+          <h3 style="margin:.4rem 0">Vendors — whom to order from</h3>
+          ${Object.values(byVendor).map(vendorSection).join("")}
+          ${skipped.length ? `<div class="small muted">Not used on this order: ${skipped.map((x) => `${esc(x.vendor.name)} (${x.mode === "disable" ? "disabled" : "skipped"}${x.reason ? " — " + esc(x.reason) : ""})`).join(", ")}</div>` : ""}
           <div class="row between" style="margin-top:.75rem"><b>Order total</b><b>${money(o.total)}</b></div>
           ${staff ? `<div class="row between small muted"><span>Cost ${money(o.cost_total)} · Overheads ${money(ohTotal)}</span><span>Net margin ${money(o.total - o.cost_total - ohTotal)}</span></div>` : ""}
         </div>
@@ -293,7 +365,8 @@ export async function orderModal(orderId, reload) {
 `,
   });
   const reopen = () => { m.close(); reload?.(); orderModal(orderId, reload); };
-  $$("[data-adv]", m.el).forEach((b) => (b.onclick = () => advanceAlloc(o.allocs.find((a) => a.id === b.dataset.adv), b.dataset.step, reopen)));
+  $$("[data-oadv]", m.el).forEach((b) => (b.onclick = () => advanceOrder(o, b.dataset.oadv, reopen)));
+  $$("[data-chv]", m.el).forEach((b) => (b.onclick = () => changeVendor(o, b.dataset.chv, byVendor[b.dataset.chv].lines, reopen)));
   $("#addoh", m.el)?.addEventListener("click", async () => {
     const list = await overheadForm(`Add overhead — order #${o.order_no}`, false);
     if (!list) return;
@@ -314,7 +387,7 @@ export async function orders(el) {
   const mine = await q(sb.from("boh_restaurant_admins").select("restaurant_id").eq("user_id", state.me.id));
   const mySet = new Set(mine.map((x) => x.restaurant_id));
   el.innerHTML = `
-    <div class="page-head"><div><h1>Orders & allocation</h1><div class="muted">Allocate every category of an order to a coordinator within ${state.settings.sla_allocate_hrs} working hours.</div></div></div>
+    <div class="page-head"><div><h1>Orders & allocation</h1><div class="muted">Allocate each order to one coordinator within ${state.settings.sla_allocate_hrs} working hours.</div></div></div>
     <div class="card"><div class="row">
       <div><label>Status</label><select id="fs"><option value="open">Open (not paid)</option><option value="placed">Awaiting allocation</option><option value="">All</option>
         ${["allocated", "acknowledged", "vendor_ordered", "followup1", "followup2", "delivered", "paid", "cancelled"].map((s) => `<option value="${s}">${s}</option>`).join("")}</select></div>
@@ -334,7 +407,7 @@ export async function orders(el) {
     const r = $("#fr").value;
     if (r === "__mine") qq = qq.in("restaurant_id", [...mySet]); else if (r) qq = qq.eq("restaurant_id", r);
     let rows = await q(qq);
-    if ($("#fc").value) rows = rows.filter((o) => (o.allocs || []).some((a) => a.coordinator_id === $("#fc").value));
+    if ($("#fc").value) rows = rows.filter((o) => o.coordinator_id === $("#fc").value || (o.allocs || []).some((a) => a.coordinator_id === $("#fc").value));
     $("#list").innerHTML = orderTable(rows, L);
     bindOrderTable($("#list"), L, load);
   };
@@ -344,18 +417,20 @@ export async function orders(el) {
 
 // ====================================================================== RESTAURANTS
 export async function restaurants(el) {
-  const [rows, admins, logins, cats] = await Promise.all([
+  const [rows, admins, logins, cats, bals] = await Promise.all([
     q(sb.from("boh_restaurants").select("*, boh_restaurant_products(count)").order("name")),
     q(sb.from("boh_restaurant_admins").select("restaurant_id, user:boh_users(full_name)")),
     q(sb.from("boh_users").select("restaurant_id").eq("role", "customer")),
     q(sb.from("boh_restaurant_category_margins").select("restaurant_id").eq("active", true)),
+    q(sb.rpc("boh_balances")),
   ]);
+  const balOf = (id) => bals.find((b) => b.restaurant_id === id);
   const count = (arr, id) => arr.filter((x) => x.restaurant_id === id).length;
   el.innerHTML = `
     <div class="page-head"><div><h1>Restaurants</h1><div class="muted">Create a restaurant with its login, switch on its categories, then allocate its ordering list.</div></div>
       <button class="btn primary" id="add">+ Add restaurant</button></div>
     <div class="row" style="margin-bottom:.75rem"><input id="s" placeholder="Search restaurants…" style="max-width:320px"></div>
-    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Contact</th><th>Our admins</th><th class="right">Categories on</th><th class="right">Items on list</th><th class="right">Logins</th><th>Status</th><th></th></tr></thead>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Contact</th><th>Our admins</th><th class="right">Categories on</th><th class="right">Items on list</th><th class="right">Logins</th><th class="right">Pending balance</th><th>Status</th><th></th></tr></thead>
     <tbody>${rows.map((r) => `<tr data-name="${esc(r.name.toLowerCase())}">
       <td><b>${esc(r.name)}</b><div class="small muted">${esc(r.address || "")}</div></td><td>${esc(r.outlet_type || "")}</td>
       <td>${esc(r.contact_name || "")}<div class="small">${esc(r.phone || "")}</div></td>
@@ -363,8 +438,9 @@ export async function restaurants(el) {
       <td class="right">${count(cats, r.id)}</td>
       <td class="right">${r.boh_restaurant_products?.[0]?.count ?? 0}</td>
       <td class="right">${count(logins, r.id)}</td>
+      <td class="right">${balOf(r.id) ? `<b>${money(balOf(r.id).pending)}</b>${Number(balOf(r.id).overdue) ? `<div class="small" style="color:var(--danger)">Overdue ${money(balOf(r.id).overdue)}</div>` : ""}` : '<span class="muted">—</span>'}</td>
       <td>${r.active ? '<span class="badge ok">Active</span>' : '<span class="badge">Inactive</span>'}</td>
-      <td class="right"><button class="btn sm primary" data-edit="${r.id}">✎ Edit</button></td></tr>`).join("") || `<tr><td colspan="9" class="empty">No restaurants yet.</td></tr>`}</tbody></table></div>`;
+      <td class="right"><button class="btn sm primary" data-edit="${r.id}">✎ Edit</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty">No restaurants yet.</td></tr>`}</tbody></table></div>`;
   $("#s").oninput = (e) => $$("tbody tr[data-name]", el).forEach((tr) => tr.classList.toggle("hidden", !tr.dataset.name.includes(e.target.value.toLowerCase())));
   const L = await lookups();
   $("#add").onclick = () => restaurantEditor(null, L, () => restaurants(el));
@@ -808,7 +884,8 @@ export async function vendors(el) {
       <td><b>${esc(v.name)}</b><div class="small muted">${esc(v.address || "")}</div></td><td>${esc(v.contact_person || "")}</td>
       <td class="phones">${telLinks(v.phones)}</td><td>${esc(DELIVERY_LABEL[v.delivery_style])}</td>
       <td class="right">${v.boh_vendor_rates?.[0]?.count ?? 0}</td>
-      <td><button class="btn sm" data-tog="${v.id}" data-on="${v.active}">${v.active ? "✅ Active" : "⛔ Inactive"}</button></td>
+      <td><button class="btn sm" data-tog="${v.id}" data-on="${v.active}">${v.active ? "✅ Active" : "⛔ Inactive"}</button>
+        ${!v.active && v.disabled_at ? `<div class="small muted">Disabled ${fmtD(v.disabled_at)}${v.disabled_reason ? " — " + esc(v.disabled_reason) : ""}</div>` : ""}</td>
       <td class="right"><button class="btn sm" data-edit="${v.id}">Edit</button></td></tr>`).join("") || '<tr><td colspan="7" class="empty">No vendors yet.</td></tr>'}
     </tbody></table></div>`;
   const filter = () => $$("tr[data-n]", el).forEach((tr) => tr.classList.toggle("hidden", !(tr.dataset.n.includes($("#s").value.toLowerCase()) && (!$("#st").value || tr.dataset.a === $("#st").value))));
@@ -914,6 +991,75 @@ export async function requests(el) {
   };
   $("#st").onchange = load;
   load();
+}
+
+// ====================================================================== CHEAPER VENDOR REPORTS
+const PR_STATUS = { new: ["New", "warn"], reviewing: ["Checking", "info"], matched: ["Matched / added", "ok"], rejected: ["Not valid", "danger"] };
+export async function priceReports(el) {
+  el.innerHTML = `
+    <div class="page-head"><div><h1>Cheaper vendors reported</h1><div class="muted">Restaurants tell us when they find a lower price. Check the vendor, add them with a rate, or adjust the restaurant's price.</div></div>
+      <select id="st" style="max-width:200px"><option value="open">Open</option><option value="">All</option>${Object.entries(PR_STATUS).map(([k, v]) => `<option value="${k}">${v[0]}</option>`).join("")}</select></div>
+    <div id="list"></div>`;
+  const load = async () => {
+    let qq = sb.from("boh_price_reports").select("*, restaurant:boh_restaurants(name), by:boh_users(full_name)").order("created_at", { ascending: false });
+    const st = $("#st").value;
+    if (st === "open") qq = qq.in("status", ["new", "reviewing"]); else if (st) qq = qq.eq("status", st);
+    const rows = await q(qq);
+    const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
+    const best = pids.length ? await q(sb.from("boh_product_best_rate").select("product_id, rate, vendor_name").in("product_id", pids)) : [];
+    const bestOf = (pid) => best.find((b) => b.product_id === pid);
+    $("#list").innerHTML = `<div class="table-wrap"><table><thead><tr><th>When</th><th>Restaurant</th><th>Product</th><th class="right">Their price</th><th class="right">Our price</th><th class="right">Our best cost</th><th>Vendor they found</th><th>Status</th><th></th></tr></thead><tbody>
+      ${rows.map((r) => { const b = bestOf(r.product_id); const diff = r.our_price ? ((r.our_price - r.reported_price) / r.our_price) * 100 : null;
+        return `<tr><td>${fmtDT(r.created_at)}</td><td>${esc(r.restaurant?.name)}<div class="small muted">${esc(r.by?.full_name || "")}</div></td>
+        <td>${esc(r.product_name)} <span class="small muted">/${esc(r.unit || "")}</span>${r.note ? `<div class="small muted">${esc(r.note)}</div>` : ""}</td>
+        <td class="right"><b>${money(r.reported_price)}</b>${diff != null ? `<div class="small" style="color:var(--danger)">${diff.toFixed(1)}% lower</div>` : ""}</td>
+        <td class="right">${money(r.our_price)}</td>
+        <td class="right">${b ? `${money(b.rate)}<div class="small muted">${esc(b.vendor_name)}</div>` : "—"}</td>
+        <td><b>${esc(r.vendor_name)}</b><div class="small phones">📞 ${telLinks([r.vendor_contact])}</div></td>
+        <td><span class="badge ${PR_STATUS[r.status][1]}">${PR_STATUS[r.status][0]}</span>${r.admin_note ? `<div class="small muted">${esc(r.admin_note)}</div>` : ""}</td>
+        <td class="right" style="white-space:nowrap"><button class="btn sm primary" data-pr="${r.id}">Act</button></td></tr>`; }).join("") || '<tr><td colspan="9" class="empty">Nothing here.</td></tr>'}
+      </tbody></table></div>`;
+    $$("[data-pr]", el).forEach((b) => (b.onclick = () => priceReportAction(rows.find((x) => x.id === b.dataset.pr), load)));
+  };
+  $("#st").onchange = load;
+  load();
+}
+
+async function priceReportAction(r, reload) {
+  const vendors = await q(sb.from("boh_vendors").select("id, name, phones, active").order("name"));
+  const digits = (x) => String(x || "").replace(/\D/g, "").slice(-10);
+  const match = vendors.find((v) => (v.phones || []).some((p) => digits(p) && digits(p) === digits(r.vendor_contact))) || vendors.find((v) => v.name.toLowerCase() === r.vendor_name.toLowerCase());
+  const m = modal({
+    title: `Cheaper vendor — ${r.product_name}`,
+    body: `<p class="small">${esc(r.restaurant?.name)} found <b>${esc(r.product_name)}</b> at <b>${money(r.reported_price)}</b> from <b>${esc(r.vendor_name)}</b> (${telLinks([r.vendor_contact])}). Our price to them: ${money(r.our_price)}.</p>
+      <div class="field"><label>Status</label><select id="st">${Object.entries(PR_STATUS).map(([k, v]) => `<option value="${k}" ${k === r.status ? "selected" : ""}>${v[0]}</option>`).join("")}</select></div>
+      <div class="field"><label>Note (for our team)</label><input id="nt" value="${esc(r.admin_note || "")}" placeholder="e.g. Called — rate valid for 25 kg bags only"></div>
+      ${r.product_id ? `<details ${r.status === "new" ? "open" : ""}><summary><b>Add this vendor's rate for ${esc(r.product_name)}</b></summary>
+        <div class="field" style="margin-top:.5rem"><label>Vendor</label><select id="vd"><option value="__new">+ New vendor: ${esc(r.vendor_name)} (${esc(r.vendor_contact)})</option>
+          ${vendors.map((v) => `<option value="${v.id}" ${match?.id === v.id ? "selected" : ""}>${esc(v.name)}${v.active ? "" : " (inactive)"}</option>`).join("")}</select>
+          ${match ? `<div class="small muted">Matched an existing vendor by ${digits(r.vendor_contact) && (match.phones || []).some((p) => digits(p) === digits(r.vendor_contact)) ? "phone number" : "name"}.</div>` : ""}</div>
+        <div class="field"><label>Our buying rate from them (₹)</label><input id="rt" type="number" step="0.01" min="0" value="${r.reported_price}">
+          <div class="small muted">Prefilled with the price the restaurant was offered — change it to what the vendor quotes us.</div></div>
+        <button class="btn" id="addv" type="button">Save vendor + rate and mark Matched</button></details>` : ""}`,
+    footer: `<button class="btn primary" id="save">Save status</button>`,
+  });
+  const done = async (status) => {
+    await q(sb.from("boh_price_reports").update({ status, admin_note: $("#nt", m.el).value.trim() || null, updated_at: new Date().toISOString() }).eq("id", r.id));
+    m.close(); refreshCounts(); reload();
+  };
+  $("#save", m.el).onclick = () => done($("#st", m.el).value).then(() => toast("Saved"));
+  $("#addv", m.el)?.addEventListener("click", async () => {
+    const rate = Number($("#rt", m.el).value);
+    if (!(rate > 0)) return toast("Enter the rate", true);
+    let vid = $("#vd", m.el).value;
+    if (vid === "__new") {
+      const [v] = await q(sb.from("boh_vendors").insert({ name: r.vendor_name, phones: [r.vendor_contact], notes: `Reported by ${r.restaurant?.name || "restaurant"} on ${fmtD(r.created_at)}` }).select("id"));
+      vid = v.id;
+    }
+    await q(sb.from("boh_vendor_rates").upsert({ vendor_id: vid, product_id: r.product_id, rate, active: true, updated_at: new Date().toISOString() }, { onConflict: "vendor_id,product_id" }));
+    toast("Vendor rate saved — it will be used if it's the cheapest");
+    await done("matched");
+  });
 }
 
 async function reviewRequest(r, L, reload) {

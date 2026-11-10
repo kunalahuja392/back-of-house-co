@@ -86,3 +86,12 @@ Everything that happens is queued in `boh_notifications` and sent to the relevan
 - **WhatsApp:** the self-hosted bot in [`whatsapp-bot/`](whatsapp-bot/) (unofficial WhatsApp Web — the number can be banned; use a separate SIM).
 - Reminders run every 10 minutes inside working hours (pg_cron); the daily report goes out at the time set in Settings.
 - Settings → Notifications has test buttons, report preview and "send now"; **Notifications** page shows every message with its status and a Retry button.
+
+
+## Coordinators, vendor changes, cheaper-vendor reports, balances (v15)
+
+- **One coordinator per order.** Admin picks one coordinator for the whole order (`boh_allocate_order_to`); they move the whole order through acknowledge → vendor order → follow-ups → delivered (`boh_advance_order_all`).
+- **Whom to order from.** Orders show items grouped by vendor with phone numbers and delivery style (also in the WhatsApp/email message to the coordinator).
+- **Vendor not responding.** *⇄ Change vendor* moves that vendor's lines to the next-cheapest vendor (or one you pick) and either **skips** it for this order only or **disables** it (inactive, not used for future orders; admins are notified). Restaurant price is unchanged; cost and margin are recalculated (`boh_reassign_vendor`).
+- **Found it cheaper?** Restaurants report a lower price with vendor name and contact from the ordering list (`boh_report_cheaper`). Admins see them under *Cheaper vendors* and can add the vendor + rate in one click.
+- **Pending balance.** `boh_balances()` – due now, overdue, under approval, not yet delivered – shown on the restaurant Home / My orders, admin dashboard and Restaurants list.

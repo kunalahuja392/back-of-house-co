@@ -1,8 +1,8 @@
-import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=14";
-import * as admin from "./admin.js?v=14";
-import * as reports from "./reports.js?v=14";
-import * as coord from "./coordinator.js?v=14";
-import * as cust from "./customer.js?v=14";
+import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=15";
+import * as admin from "./admin.js?v=15";
+import * as reports from "./reports.js?v=15";
+import * as coord from "./coordinator.js?v=15";
+import * as cust from "./customer.js?v=15";
 
 const root = document.getElementById("root");
 
@@ -14,6 +14,7 @@ const MENUS = {
     ["tasks", "✅", "My assigned orders", coord.tasks],
     ["requests", "🙋", "Product requests", admin.requests],
     ["enquiries", "💬", "Enquiries", admin.enquiries],
+    ["pricereports", "💡", "Cheaper vendors", admin.priceReports],
     ["complaints", "⚠️", "Complaints", admin.complaints],
     ["Catalogue"],
     ["restaurants", "🍽️", "Restaurants", admin.restaurants],
@@ -181,14 +182,15 @@ function shell() {
 
 async function refreshCounts() {
   if (!["admin", "super_admin"].includes(state.me.role)) return;
-  const [o, r, c, e] = await Promise.all([
+  const [o, r, c, e, p] = await Promise.all([
     sb.from("boh_orders").select("id", { count: "exact", head: true }).neq("status", "cancelled").or("status.eq.placed,payment_status.eq.under_review"),
     sb.from("boh_product_requests").select("id", { count: "exact", head: true }).eq("status", "pending"),
     sb.from("boh_complaints").select("id", { count: "exact", head: true }).neq("status", "resolved"),
     sb.from("boh_enquiries").select("id", { count: "exact", head: true }).eq("status", "new"),
+    sb.from("boh_price_reports").select("id", { count: "exact", head: true }).eq("status", "new"),
   ]);
   const set = (k, n) => { const el = $(`[data-count="${k}"]`); if (el) { el.textContent = n; el.classList.toggle("hidden", !n); } };
-  set("orders", o.count); set("requests", r.count); set("complaints", c.count); set("enquiries", e.count);
+  set("orders", o.count); set("requests", r.count); set("complaints", c.count); set("enquiries", e.count); set("pricereports", p.count);
 }
 window.bohRefreshCounts = refreshCounts;
 

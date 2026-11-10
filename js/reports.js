@@ -1,4 +1,4 @@
-import { addWorkingHours, sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, q, tabs, todayIST, daysAgoIST, downloadCSV, orderSteps, allocSteps, DELIVERY_LABEL } from "./lib.js?v=14";
+import { addWorkingHours, sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, q, tabs, todayIST, daysAgoIST, downloadCSV, orderSteps, allocSteps, orderAlloc, DELIVERY_LABEL } from "./lib.js?v=15";
 
 const sum = (a, f) => a.reduce((s, x) => s + Number(f(x) || 0), 0);
 function groupBy(arr, keyFn) { const m = new Map(); arr.forEach((x) => { const k = keyFn(x); if (!m.has(k)) m.set(k, []); m.get(k).push(x); }); return m; }
@@ -166,26 +166,32 @@ export async function reports(el) {
   function coordinatorSLA(d) {
     const keys = ["allocated", "acknowledged", "vendor_ordered", "followup1", "followup2", "delivered"];
     const label = { allocated: "Allocation (admin)", acknowledged: "Ack", vendor_ordered: "Vendor order", followup1: "F-up 1", followup2: "F-up 2", delivered: "Delivered by date" };
-    const rows = [...groupBy(d.allocs, (a) => a.coordinator_id)].map(([cid, as]) => {
-      const r = { Coordinator: d.user[cid] || "—", Categories: as.length, Orders: new Set(as.map((a) => a.order_id)).size, Overdue: 0,
-        Overheads: sum(d.ohs.filter((x) => as.some((a) => a.id === x.allocation_id)), (x) => x.amount) };
+    // one row per order (whole order is one coordinator's job), folded from its category allocations
+    const per = [...groupBy(d.allocs, (a) => a.order_id)].map(([oid, as]) => {
+      const o = { ...as[0].order, allocs: as };
+      const A = orderAlloc(o);
+      return { o, A, cid: o.coordinator_id || as[0].coordinator_id };
+    }).filter((x) => x.o?.id);
+    const rows = [...groupBy(per, (x) => x.cid)].map(([cid, list]) => {
+      const oids = new Set(list.map((x) => x.o.id));
+      const r = { Coordinator: d.user[cid] || "—", Orders: list.length, Overdue: 0,
+        Overheads: sum(d.ohs.filter((x) => oids.has(x.order_id)), (x) => x.amount) };
       keys.forEach((k) => {
         let done = 0, onTime = 0;
-        as.forEach((a) => { const st = allocSteps(a.order, a).find((s) => s.key === k); if (st.state === "done" || st.state === "late") { done++; if (st.state === "done") onTime++; } if (st.state === "overdue") r.Overdue++; });
+        list.forEach(({ o, A }) => { const st = allocSteps(o, A).find((s) => s.key === k); if (st.state === "done" || st.state === "late") { done++; if (st.state === "done") onTime++; } if (st.state === "overdue") r.Overdue++; });
         r[label[k]] = done ? (onTime / done) * 100 : null;
       });
-      // payment is per order: count orders this coordinator was on
       let pd = 0, pon = 0;
-      [...new Set(as.map((a) => a.order))].forEach((o) => { const st = orderSteps(o)[2]; if (st.at) { pd++; if (st.state === "done") pon++; } });
+      list.forEach(({ o }) => { const st = orderSteps(o)[2]; if (st.at) { pd++; if (st.state === "done") pon++; } });
       r.Payment = pd ? (pon / pd) * 100 : null;
       return r;
     });
     const unalloc = d.orders.filter((o) => o.status === "placed").length;
     bindInner = null;
     const badge = (v) => (v == null ? "—" : `<span class="badge ${v >= 90 ? "ok" : v >= 70 ? "warn" : "danger"}">${pct(v)}</span>`);
-    return { title: "Coordinator SLA — % of steps done on time (per category allocated)",
+    return { title: "Coordinator SLA — % of steps done on time (per order)",
       html: (unalloc ? `<div class="notice">${unalloc} order(s) in this period still waiting for allocation.</div>` : "") +
-        table([{ key: "Coordinator", label: "Coordinator" }, { key: "Orders", label: "Orders", num: true }, { key: "Categories", label: "Categories", num: true },
+        table([{ key: "Coordinator", label: "Coordinator" }, { key: "Orders", label: "Orders", num: true },
         ...[...keys.map((k) => label[k]), "Payment"].map((l) => ({ key: l, label: l, num: true, fmt: badge })),
         { key: "Overdue", label: "Overdue now", num: true }, { key: "Overheads", label: "Overheads", num: true, fmt: money }], rows), csv: rows };
   }

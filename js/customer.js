@@ -1,4 +1,4 @@
-import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks, payBadge, PAY_MODE } from "./lib.js?v=14";
+import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks, payBadge, PAY_MODE } from "./lib.js?v=15";
 
 const CART_KEY = () => "boh_cart_" + state.me.restaurant_id;
 const loadCart = () => { try { return JSON.parse(localStorage.getItem(CART_KEY()) || "{}"); } catch { return {}; } };
@@ -25,6 +25,19 @@ function cutoffInfo() {
   return { open: false, html: `Today's ${fmtCut} cut-off has passed — orders placed now are delivered on <b>${dayAfter(2)}</b>.` };
 }
 
+// pending balance: everything not yet paid, split into due now / under approval / not delivered yet
+async function balanceCard() {
+  const [b] = await q(sb.rpc("boh_balances"));
+  if (!b || !Number(b.pending)) return `<div class="card"><h2>Pending balance</h2><div class="stat"><div class="v" style="color:var(--ok)">${money(0)}</div><div class="l">Nothing pending — thank you!</div></div></div>`;
+  const line = (l, v, c) => Number(v) ? `<div class="row between small"><span>${l}</span><b style="${c ? "color:" + c : ""}">${money(v)}</b></div>` : "";
+  return `<div class="card"><h2>Pending balance</h2>
+    <div class="stat"><div class="v">${money(b.pending)}</div><div class="l">total not yet paid</div></div>
+    <div style="margin-top:.5rem">${line("Due now (delivered / pre-pay)", b.due, "var(--danger)")}${line("…of which overdue", b.overdue, "var(--danger)")}
+      ${line("Under approval (you've paid, we're checking)", b.under_review, "var(--warn)")}${line("Not delivered yet (pay on delivery)", b.upcoming)}</div>
+    ${Number(b.due) ? `<div class="row" style="margin-top:.6rem"><a class="btn sm accent" href="#/myorders">Pay now →</a></div>` : ""}</div>`;
+}
+const uniqCoords = (list) => [...new Map((list || []).map((c) => [c.full_name + "|" + (c.phone || ""), c])).values()];
+
 // ====================================================================== HOME
 export async function home(el) {
   const [slides, orders, cat] = await Promise.all([
@@ -34,7 +47,7 @@ export async function home(el) {
   ]);
   const unpaid = unpaidBanner(orders);
   const open = orders.filter((o) => !["paid", "cancelled"].includes(o.status)).slice(0, 3);
-  const coords = await Promise.all(open.map((o) => q(sb.rpc("boh_order_coordinators", { p_order: o.id }))));
+  const [coords, bal] = await Promise.all([Promise.all(open.map((o) => q(sb.rpc("boh_order_coordinators", { p_order: o.id })).then(uniqCoords))), balanceCard()]);
   const ci = cutoffInfo();
   el.innerHTML = `
     <div id="slides"></div>
@@ -43,16 +56,18 @@ export async function home(el) {
     <div class="notice ${ci.open ? "green" : ""}">${ci.html}</div>
     ${unpaid ? unpaid.replace("</div>", ' <a href="#/myorders">Go to my orders →</a></div>') : ""}
     <div class="grid c2">
-      <div class="card"><h2>Your coordinators</h2>
+      <div class="card"><h2>Your coordinator</h2>
         ${open.length ? open.map((o, i) => `<div style="margin-bottom:.6rem"><b>Order #${o.order_no}</b> <span class="small muted">delivery ${fmtD(o.delivery_date)}</span>
-          ${coords[i].length ? coords[i].map((c) => `<div class="small">${esc(c.category_name)}: <b>${esc(c.full_name)}</b> 📞 ${telLinks([c.phone])}</div>`).join("")
+          ${coords[i].length ? coords[i].map((c) => `<div class="small">Coordinator: <b>${esc(c.full_name)}</b> 📞 ${telLinks([c.phone])}</div>`).join("")
             : '<div class="small muted">A coordinator will be assigned shortly.</div>'}</div>`).join("")
           : `<div class="muted">When you place an order, the coordinator handling it will appear here with their number.</div>`}
         ${state.settings.support_phone ? `<div class="small" style="margin-top:.75rem">Support: ${telLinks([state.settings.support_phone])}</div>` : ""}
       </div>
+      ${bal}
       <div class="card"><h2>Your ordering list</h2>
         <div class="stat"><div class="v">${cat.length}</div><div class="l">products ready to order</div></div>
-        <div class="row" style="margin-top:.5rem"><a class="btn" href="#/browse">Browse more products</a></div></div>
+        <div class="row" style="margin-top:.5rem"><a class="btn" href="#/browse">Browse more products</a></div>
+        <div class="small muted" style="margin-top:.5rem">Found something cheaper elsewhere? Tap <b>Found it cheaper?</b> on any item in Place order and tell us.</div></div>
     </div>
     <div class="card"><div class="row between"><h2>Recent orders</h2><a href="#/myorders">See all</a></div>
       ${orders.length ? `<table><tbody>${orders.slice(0, 5).map((o) => `<tr><td><b>#${o.order_no}</b></td><td>${fmtDT(o.created_at)}</td><td>Delivery ${fmtD(o.delivery_date)}</td><td class="right">${money(o.total)}</td><td>${statusBadge(o.status)}</td><td>${payBadge(o)}</td></tr>`).join("")}</tbody></table>`
@@ -180,7 +195,8 @@ export async function placeOrder(el) {
     <div class="olist ${view()}" id="olist">
       ${cat.map((p) => `<div class="item" data-id="${p.product_id}" data-n="${esc((p.product_name + " " + (p.brand || "")).toLowerCase())}" data-c="${p.category_id}">
         <div class="pic" ${p.image_url ? `style="background-image:url('${esc(p.image_url)}')"` : ""}>${p.image_url ? "" : "📦"}</div>
-        <div class="nm"><b>${esc(p.product_name)}</b>${p.brand ? ` <span class="small muted">${esc(p.brand)}</span>` : ""}<div class="small muted">${esc(p.category_name)}</div></div>
+        <div class="nm"><b>${esc(p.product_name)}</b>${p.brand ? ` <span class="small muted">${esc(p.brand)}</span>` : ""}<div class="small muted">${esc(p.category_name)}</div>
+          <button class="linkbtn small" type="button" data-cheap title="Tell us if you found a lower price">💡 Found it cheaper?</button></div>
         <div class="pr">${p.price == null ? '<span class="small muted">Price on request</span>' : money(p.price) + ` <span class="small muted">/${esc(p.unit)}</span>`}</div>
         <div class="qty"><button class="btn sm" data-dec>−</button><input type="number" min="0" step="any" data-q value="${cart[p.product_id] || ""}" ${p.price == null ? "disabled" : ""}><button class="btn sm" data-inc>+</button></div>
         <div class="amt" data-amt></div></div>`).join("")}
@@ -213,6 +229,7 @@ export async function placeOrder(el) {
     $("[data-inc]", tr).onclick = () => { if (!inp.disabled) { inp.value = (Number(inp.value) || 0) + 1; recalc(); } };
     $("[data-dec]", tr).onclick = () => { inp.value = Math.max(0, (Number(inp.value) || 0) - 1) || ""; recalc(); };
   });
+  $$("[data-cheap]", el).forEach((b) => (b.onclick = () => reportCheaper(byId[b.closest(".item").dataset.id])));
   $("#s").oninput = filter; $("#c").onchange = filter; $("#only").onchange = filter;
   $$("[data-view]", el).forEach((b) => (b.onclick = () => {
     try { localStorage.setItem(VKEY, b.dataset.view); } catch {}
@@ -263,6 +280,33 @@ export async function placeOrder(el) {
     };
   };
   recalc();
+}
+
+// restaurant tells us about a cheaper vendor: price, vendor name and contact are required
+async function reportCheaper(p) {
+  const past = await q(sb.from("boh_price_reports").select("*").eq("product_id", p.product_id).order("created_at", { ascending: false }).limit(3));
+  const ST = { new: "Sent", reviewing: "We're checking", matched: "Matched", rejected: "Not valid" };
+  const m = modal({
+    title: `Found ${p.product_name} cheaper?`,
+    body: `<p class="small muted">Tell us where — our team will check the vendor and get back to you. Our price now: <b>${p.price == null ? "on request" : money(p.price) + " / " + esc(p.unit)}</b></p>
+      <div class="form-grid">
+        <div class="field"><label>Price you were offered (₹ per ${esc(p.unit)}) *</label><input id="pr" type="number" step="0.01" min="0" inputmode="decimal"></div>
+        <div class="field"><label>Vendor name *</label><input id="vn" placeholder="e.g. Sharma Traders"></div>
+        <div class="field"><label>Vendor contact number *</label><input id="vc" type="tel" placeholder="+91…"></div>
+        <div class="field"><label>Note (optional)</label><input id="nt" placeholder="brand, pack size, minimum quantity…"></div>
+      </div>
+      ${past.length ? `<div class="small muted" style="margin-top:.5rem">You reported before: ${past.map((r) => `${money(r.reported_price)} from ${esc(r.vendor_name)} (${ST[r.status]}, ${fmtD(r.created_at)})`).join(" · ")}</div>` : ""}`,
+    footer: `<button class="btn" id="cn">Cancel</button><button class="btn primary" id="go">Send to Back of House</button>`,
+  });
+  $("#cn", m.el).onclick = m.close;
+  $("#go", m.el).onclick = async () => {
+    const price = Number($("#pr", m.el).value), vn = $("#vn", m.el).value.trim(), vc = $("#vc", m.el).value.trim();
+    if (!(price > 0)) return toast("Enter the price you were offered", true);
+    if (!vn) return toast("Enter the vendor name", true);
+    if (vc.replace(/\D/g, "").length < 8) return toast("Enter the vendor's contact number", true);
+    await q(sb.rpc("boh_report_cheaper", { p_product: p.product_id, p_price: price, p_vendor: vn, p_contact: vc, p_note: $("#nt", m.el).value.trim() || null }));
+    m.close(); toast("Thanks! Our team will check this vendor.");
+  };
 }
 
 // ====================================================================== PAYMENT
@@ -323,10 +367,11 @@ export function payNow(o, done) {
 const CUST_STEPS = [["created_at", "Order placed"], ["allocated_at", "Coordinator assigned"], ["acknowledged_at", "Acknowledged"], ["vendor_ordered_at", "Being procured"], ["delivered_at", "Delivered"], ["paid_at", "Payment received"]];
 
 export async function myOrders(el) {
-  const orders = await q(sb.from("boh_orders").select("*").order("created_at", { ascending: false }).limit(200));
+  const [orders, bal] = await Promise.all([q(sb.from("boh_orders").select("*").order("created_at", { ascending: false }).limit(200)), balanceCard()]);
   el.innerHTML = `
     <div class="page-head"><h1>My orders</h1><a class="btn primary" href="#/order">+ New order</a></div>
     ${unpaidBanner(orders)}
+    <div style="max-width:520px;margin-bottom:1rem">${bal}</div>
     <div class="table-wrap"><table><thead><tr><th>#</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Order status</th><th>Payment</th><th></th></tr></thead><tbody>
     ${orders.map((o) => `<tr><td><b>${o.order_no}</b></td><td>${fmtDT(o.created_at)}</td><td>${fmtD(o.delivery_date)}</td><td class="right">${money(o.total)}</td><td>${statusBadge(o.status)}</td>
       <td>${payBadge(o)}<div class="small muted">${PAY_MODE[o.payment_mode] || ""}</div>${o.payment_status === "unpaid" && o.payment_rejected_note ? `<div class="small" style="color:var(--danger)">${esc(o.payment_rejected_note)}</div>` : ""}</td>
@@ -336,14 +381,14 @@ export async function myOrders(el) {
   $$("[data-pay]", el).forEach((b) => (b.onclick = () => payNow(orders.find((x) => x.id === b.dataset.pay), reload)));
   $$("[data-v]", el).forEach((b) => (b.onclick = async () => {
     const o = orders.find((x) => x.id === b.dataset.v);
-    const [lines, coords] = await Promise.all([q(sb.rpc("boh_order_lines", { p_order: o.id })), q(sb.rpc("boh_order_coordinators", { p_order: o.id }))]);
+    const [lines, coords] = await Promise.all([q(sb.rpc("boh_order_lines", { p_order: o.id })), q(sb.rpc("boh_order_coordinators", { p_order: o.id })).then(uniqCoords)]);
     const m = modal({
       title: `Order #${o.order_no}`,
       body: `<div class="row" style="margin-bottom:1rem">${statusBadge(o.status)} ${payBadge(o)}<span class="muted">${PAY_MODE[o.payment_mode] || ""} · Delivery ${fmtD(o.delivery_date)}</span></div>
         ${o.payment_status === "under_review" ? `<div class="notice">You told us you paid (ref <b>${esc(o.payment_claim_ref)}</b>). Our team is checking it.</div>` : ""}
         ${o.payment_status === "unpaid" && o.payment_rejected_note ? `<div class="notice" style="background:#fbeeed;border-color:#efc5c1;color:#8a2a23"><b>Not paid:</b> your payment could not be approved — ${esc(o.payment_rejected_note)}</div>` : ""}
         <div class="steps" style="margin-bottom:1rem">${CUST_STEPS.map(([k, l]) => `<div class="step ${o[k] ? "done" : ""}"><span class="dot"></span><div>${l}</div><div class="small muted">${o[k] ? fmtDT(o[k]) : ""}</div></div>`).join("")}</div>
-        ${coords.length ? `<div class="card" style="padding:.7rem;margin-bottom:1rem"><b>Your coordinators</b>${coords.map((c) => `<div class="small">${esc(c.category_name)}: ${esc(c.full_name)} 📞 ${telLinks([c.phone])}</div>`).join("")}</div>` : ""}
+        ${coords.length ? `<div class="card" style="padding:.7rem;margin-bottom:1rem"><b>Your coordinator</b>${coords.map((c) => `<div class="small">${esc(c.full_name)} 📞 ${telLinks([c.phone])}</div>`).join("")}</div>` : ""}
         <table><thead><tr><th>Product</th><th class="right">Qty</th><th class="right">Price</th><th class="right">Amount</th></tr></thead><tbody>
         ${lines.map((l) => `<tr><td>${esc(l.product_name)}</td><td class="right">${num(l.qty, 3)} ${esc(l.unit)}</td><td class="right">${money(l.unit_price)}</td><td class="right">${money(l.line_total)}</td></tr>`).join("")}
         <tr><td colspan="3"><b>Total</b></td><td class="right"><b>${money(o.total)}</b></td></tr></tbody></table>

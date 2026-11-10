@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=14";
+import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=15";
 
 export const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -206,7 +206,7 @@ export function allocSteps(o, a, s = state.settings) {
 // order-level steps: allocation of all categories, and payment after full delivery
 export function orderSteps(o, s = state.settings) {
   return judge([
-    { key: "allocated", label: `All categories allocated (${s.sla_allocate_hrs} working hrs)`, at: o.status === "placed" ? null : o.allocated_at, due: addWorkingHours(o.created_at, s.sla_allocate_hrs, s) },
+    { key: "allocated", label: `Allocated to a coordinator (${s.sla_allocate_hrs} working hrs)`, at: o.status === "placed" ? null : o.allocated_at, due: addWorkingHours(o.created_at, s.sla_allocate_hrs, s) },
     { key: "delivered", label: "Whole order delivered", at: o.delivered_at, due: o.delivery_date ? new Date(o.delivery_date + "T" + s.work_end + "+05:30") : null },
     { key: "paid", label: `Payment completed (${s.sla_payment_hrs} working hrs after delivery)`, at: o.paid_at, due: addWorkingHours(o.delivered_at, s.sla_payment_hrs, s) },
   ], o.status === "cancelled");
@@ -221,14 +221,34 @@ export const STEP_BUTTON = {
   followup2: "Log 2nd follow-up", delivered: "Mark delivered", paid: "Mark payment completed",
 };
 
+// one coordinator handles the whole order: fold its category allocations into one
+const ALLOC_ORDER = ["allocated", "acknowledged", "vendor_ordered", "followup1", "followup2", "delivered"];
+export function orderAlloc(o) {
+  const al = o.allocs || [];
+  if (!al.length) return null;
+  const rank = Math.min(...al.map((a) => ALLOC_ORDER.indexOf(a.status)));
+  const all = (k) => (al.every((a) => a[k]) ? al.map((a) => a[k]).sort().at(-1) : null);
+  return {
+    id: o.id, order_id: o.id, status: ALLOC_ORDER[rank], category_name: "Whole order",
+    coordinator_id: o.coordinator_id || al[0].coordinator_id, coordinator: al[0].coordinator,
+    allocated_at: all("allocated_at"), acknowledged_at: all("acknowledged_at"), vendor_ordered_at: all("vendor_ordered_at"),
+    followup1_at: all("followup1_at"), followup2_at: all("followup2_at"), delivered_at: all("delivered_at"),
+    followup1_note: al.map((a) => a.followup1_note).find(Boolean) || null,
+    followup2_note: al.map((a) => a.followup2_note).find(Boolean) || null,
+  };
+}
+// can the whole order be marked delivered now (vendor order placed)?
+export const canDeliver = (status) => ["vendor_ordered", "followup1", "followup2"].includes(status);
+
 // the next thing due on an order (o.allocs = its allocations, optional)
 export function pendingSteps(o) {
   if (["paid", "cancelled"].includes(o.status)) return [];
   const out = [];
   if (o.status === "placed") out.push(orderSteps(o)[0]);
-  for (const a of o.allocs || []) {
+  const a = orderAlloc(o);
+  if (a && o.status !== "placed") {
     const st = allocSteps(o, a).find((x) => !x.at);
-    if (st) out.push({ ...st, label: a.category_name + ": " + st.label });
+    if (st) out.push(st);
   }
   if (o.status === "delivered") out.push(orderSteps(o)[2]);
   return out.filter((x) => x.due);
