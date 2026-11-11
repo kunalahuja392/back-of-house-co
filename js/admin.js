@@ -2,7 +2,7 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox, orderAlloc, canDeliver,
-} from "./lib.js?v=16";
+} from "./lib.js?v=17";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -1397,7 +1397,9 @@ async function notificationSettings(el) {
           <div class="field"><label>Send from (verified in Brevo)</label><input name="email_from" type="email" value="${esc(s.email_from || "")}" placeholder="orders@yourcompany.com"></div>
           <div class="field"><label>Sender name</label><input name="email_from_name" value="${esc(s.email_from_name || s.company_name)}"></div>
           <div class="field"><label>Brevo API key ${cfg.brevo_configured ? '<span class="badge ok">saved</span>' : '<span class="badge warn">not set</span>'}</label>
-            <input id="brevo" type="password" placeholder="${cfg.brevo_configured ? "Saved — paste a new key to replace it" : "xkeysib-…"}" autocomplete="off"></div>
+            <div class="row"><input id="brevo" type="text" name="boh-brevo-key" autocomplete="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="flex:1;font-family:monospace"
+              placeholder="${cfg.brevo_configured ? "Saved — paste a new key to replace it" : "xkeysib-…"}"><button class="btn primary" id="savebrevo" type="button">Save key</button></div>
+            <div class="small muted">Paste the key that starts with <b>xkeysib-</b> (Brevo → SMTP & API → <b>API keys</b> tab, not SMTP).</div></div>
           <div class="row"><input id="testemail" type="email" value="${esc(state.me.email)}" style="flex:1"><button class="btn sm" id="sendtestemail" type="button">Send test email</button></div>
         </div>
         <div class="card" style="padding:.8rem;margin-top:0"><b>💬 WhatsApp</b>
@@ -1417,7 +1419,7 @@ async function notificationSettings(el) {
               <div class="field"><label>WhatsApp Business Account ID</label><input name="wa_waba_id" value="${esc(s.wa_waba_id || "")}" inputmode="numeric"></div>
             </div>
             <div class="field"><label>Permanent access token ${cloudSaved ? '<span class="badge ok">saved</span>' : '<span class="badge warn">not set</span>'}</label>
-              <input id="watoken" type="password" autocomplete="off" placeholder="${cloudSaved ? "Saved — paste a new token to replace it" : "EAAG…"}"></div>
+              <input id="watoken" type="text" name="boh-wa-token" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="font-family:monospace" placeholder="${cloudSaved ? "Saved — paste a new token to replace it" : "EAAG…"}"></div>
             <div class="row"><button class="btn sm" type="button" id="wastatus">Check setup</button><button class="btn sm" type="button" id="watpl">Create message templates</button></div>
             <div id="wainfo" class="small" style="margin-top:.5rem"></div>
           </div>
@@ -1478,6 +1480,20 @@ async function notificationSettings(el) {
     if (!(await confirmBox("Create a new bot key? The bot stops working until you put the new key in its config.json."))) return;
     $("#botkey", nf).value = await q(sb.rpc("boh_rotate_bot_secret")); $("#botkey", nf).type = "text"; toast("New bot key created");
   };
+  // Brevo API keys look like xkeysib-<64 hex>-<16 chars>; catch SMTP keys and browser-autofilled passwords
+  const brevoOk = (k) => {
+    if (k.startsWith("xsmtpsib-")) { toast("That's the SMTP key. Use the API key (starts with xkeysib-) from Brevo → SMTP & API → API keys.", true); return false; }
+    if (!k.startsWith("xkeysib-") || k.length < 40) { toast("That doesn't look like a Brevo API key — it should start with xkeysib- and be about 90 characters long.", true); return false; }
+    return true;
+  };
+  $("#savebrevo", nf).onclick = async () => {
+    const k = $("#brevo", nf).value.trim();
+    if (!k) return toast("Paste the Brevo API key first", true);
+    if (!brevoOk(k)) return;
+    await q(sb.rpc("boh_set_notify_secret", { p_key: "brevo_api_key", p_value: k }));
+    $("#brevo", nf).value = ""; toast("Brevo key saved — now click Send test email");
+    sb.functions.invoke("boh-notify", { body: {} }).catch(() => {});
+  };
   $("#savenf", nf).onclick = async () => {
     const f = formData(nf);
     const patch = { notify_email: f.notify_email, notify_whatsapp: f.notify_whatsapp, email_from: f.email_from, email_from_name: f.email_from_name,
@@ -1486,7 +1502,7 @@ async function notificationSettings(el) {
     const row = await q(sb.from("boh_settings").update(patch).eq("id", 1).select().single());
     state.settings = row;
     const key = $("#brevo", nf).value.trim();
-    if (key) { await q(sb.rpc("boh_set_notify_secret", { p_key: "brevo_api_key", p_value: key })); $("#brevo", nf).value = ""; }
+    if (key) { if (!brevoOk(key)) return; await q(sb.rpc("boh_set_notify_secret", { p_key: "brevo_api_key", p_value: key })); $("#brevo", nf).value = ""; }
     const wt = $("#watoken", nf).value.trim();
     if (wt) { await q(sb.rpc("boh_set_notify_secret", { p_key: "wa_cloud_token", p_value: wt })); $("#watoken", nf).value = ""; }
     toast("Notification settings saved"); settings(el);
