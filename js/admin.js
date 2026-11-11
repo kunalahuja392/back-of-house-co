@@ -2,7 +2,7 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox, orderAlloc, canDeliver,
-} from "./lib.js?v=17";
+} from "./lib.js?v=18";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -1399,6 +1399,7 @@ async function notificationSettings(el) {
           <div class="field"><label>Brevo API key ${cfg.brevo_configured ? '<span class="badge ok">saved</span>' : '<span class="badge warn">not set</span>'}</label>
             <div class="row"><input id="brevo" type="text" name="boh-brevo-key" autocomplete="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="flex:1;font-family:monospace"
               placeholder="${cfg.brevo_configured ? "Saved — paste a new key to replace it" : "xkeysib-…"}"><button class="btn primary" id="savebrevo" type="button">Save key</button></div>
+            ${cfg.brevo_configured ? `<div class="small" style="margin-top:.3rem">Saved key: <code id="brevohint">…</code> <span class="muted">(only the start and end are shown, for safety)</span></div>` : ""}
             <div class="small muted">Paste the key that starts with <b>xkeysib-</b> (Brevo → SMTP & API → <b>API keys</b> tab, not SMTP).</div></div>
           <div class="row"><input id="testemail" type="email" value="${esc(state.me.email)}" style="flex:1"><button class="btn sm" id="sendtestemail" type="button">Send test email</button></div>
         </div>
@@ -1486,6 +1487,7 @@ async function notificationSettings(el) {
     if (!k.startsWith("xkeysib-") || k.length < 40) { toast("That doesn't look like a Brevo API key — it should start with xkeysib- and be about 90 characters long.", true); return false; }
     return true;
   };
+  if ($("#brevohint", nf)) sb.rpc("boh_secret_hint", { p_key: "brevo_api_key" }).then(({ data }) => { if ($("#brevohint", nf)) $("#brevohint", nf).textContent = data || "—"; });
   $("#savebrevo", nf).onclick = async () => {
     const k = $("#brevo", nf).value.trim();
     if (!k) return toast("Paste the Brevo API key first", true);
@@ -1493,6 +1495,7 @@ async function notificationSettings(el) {
     await q(sb.rpc("boh_set_notify_secret", { p_key: "brevo_api_key", p_value: k }));
     $("#brevo", nf).value = ""; toast("Brevo key saved — now click Send test email");
     sb.functions.invoke("boh-notify", { body: {} }).catch(() => {});
+    settings(el);
   };
   $("#savenf", nf).onclick = async () => {
     const f = formData(nf);
