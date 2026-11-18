@@ -2,7 +2,8 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox, orderAlloc, canDeliver,
-} from "./lib.js?v=18";
+} from "./lib.js?v=19";
+import { DAYS, reviewVendor, vendorLogins, listingEditor } from "./growth.js?v=19";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -289,13 +290,16 @@ function overheadForm(title, forDelivery) {
 }
 
 export async function orderModal(orderId, reload) {
-  const [o, items, events, ohs, skips] = await Promise.all([
+  const [o, items, events, ohs, skips, pos] = await Promise.all([
     q(sb.from("boh_orders").select("*, coordinator:boh_users!boh_orders_coordinator_id_fkey(full_name,phone), allocs:boh_order_allocations(*, coordinator:boh_users!boh_order_allocations_coordinator_id_fkey(full_name,phone)), restaurant:boh_restaurants(name,phone,address)").eq("id", orderId).single()),
     q(sb.from("boh_order_items").select("*, vendor:boh_vendors(name,phones,delivery_style,active)").eq("order_id", orderId).order("vendor_name").order("product_name")),
     q(sb.from("boh_order_events").select("*, actor:boh_users(full_name)").eq("order_id", orderId).order("created_at")),
     q(sb.from("boh_order_overheads").select("*, by:boh_users(full_name)").eq("order_id", orderId).order("created_at")),
     q(sb.from("boh_order_vendor_skips").select("*, vendor:boh_vendors(name)").eq("order_id", orderId)),
+    q(sb.from("boh_vendor_pos").select("*").eq("order_id", orderId)),
   ]);
+  const PO_LABEL = { sent: ["Sent to vendor portal", "warn"], accepted: ["Vendor accepted", "ok"], dispatched: ["Vendor dispatched", "info"], delivered: ["Vendor delivered", "ok"], rejected: ["Vendor rejected", "danger"], cancelled: ["PO cancelled", ""] };
+  const poOf = (vid) => pos.filter((x) => x.vendor_id === vid).sort((a, b) => (b.updated_at > a.updated_at ? 1 : -1))[0];
   const staff = isStaff();
   const onOrder = o.coordinator_id === state.me.id || (o.allocs || []).some((a) => a.coordinator_id === state.me.id);
   const can = (staff || onOrder) && !["cancelled", "paid", "delivered"].includes(o.status);
@@ -311,6 +315,7 @@ export async function orderModal(orderId, reload) {
   const vendorSection = (g) => `<div class="card" style="padding:.8rem;margin-bottom:.6rem">
       <div class="row between"><div><b>🏪 ${esc(g.name || "No vendor")}</b> <span class="badge info">${esc(DELIVERY_LABEL[g.style] || "")}</span>
         ${g.v && g.v.active === false ? '<span class="badge danger">Disabled</span>' : ""}
+        ${poOf(g.id) ? `<span class="badge ${PO_LABEL[poOf(g.id).status][1]}" title="${esc(poOf(g.id).note || "")}">📲 ${PO_LABEL[poOf(g.id).status][0]}</span>` : ""}
         <div class="small phones">📞 ${telLinks(g.v?.phones)}</div></div>
         ${can && g.id ? `<button class="btn sm" data-chv="${g.id}" title="Vendor not responding? Move these items to another vendor">⇄ Change vendor</button>` : ""}</div>
       <table style="margin-top:.4rem"><thead><tr><th>Item</th><th>Category</th><th class="right">Qty</th>${staff ? '<th class="right">Cost</th><th class="right">Margin</th>' : ""}<th class="right">Price</th><th class="right">Total</th></tr></thead><tbody>
@@ -800,12 +805,15 @@ async function productEditor(id, L, reload) {
             <div class="field"><label>Unit</label><input name="unit" value="${esc(p.unit || "")}" placeholder="kg, pc, litre, box of 100"></div>
             <div class="field"><label>Brand</label><input name="brand" value="${esc(p.brand || "")}"></div>
             <div class="field"><label>SKU / code</label><input name="sku" value="${esc(p.sku || "")}"></div>
+            <div class="field"><label>Minimum order qty (MOQ) for restaurants</label><input name="moq" type="number" step="any" min="0" value="${p.moq ?? ""}" placeholder="none"></div>
           </div>
           <div class="field"><label>Description (shown to restaurants)</label><textarea name="description" rows="3">${esc(p.description || "")}</textarea></div>
           <div class="field"><label>Image</label><input type="file" id="img" accept="image/*"><input type="hidden" name="image_url" value="${esc(p.image_url || "")}">
             <div id="imgp" style="margin-top:.4rem">${p.image_url ? `<img src="${esc(p.image_url)}" style="max-height:100px;border-radius:8px">` : ""}</div></div>
           <label class="row" style="margin:0"><input type="checkbox" name="show_image" ${p.show_image !== false ? "checked" : ""}> Show this image to restaurants on their ordering screen</label>
+          <label class="row" style="margin:0"><input type="checkbox" name="b2b" ${p.b2b !== false ? "checked" : ""}> Show to restaurant clients (catalogue / requests) — untick for online-shop-only items</label>
           <label class="row" style="margin:0"><input type="checkbox" name="active" ${p.active ? "checked" : ""}> Active</label>
+          ${id ? `<button class="btn sm" type="button" id="toshop" style="margin-top:.5rem">🛒 Sell on online shop…</button>` : ""}
         </div>
         <div id="rates">${id ? "" : '<div class="notice">Save the product first, then add vendor rates.</div>'}</div>
       </div>`,
@@ -834,6 +842,10 @@ async function productEditor(id, L, reload) {
     toast("Product saved"); reload();
   };
   if (id) renderRates();
+  $("#toshop", m.el)?.addEventListener("click", async () => {
+    const l = await q(sb.from("boh_shop_listings").select("*").eq("product_id", id).maybeSingle());
+    listingEditor(l, null, id);
+  });
 
   async function renderRates() {
     const box = $("#rates", m.el);
@@ -878,19 +890,21 @@ export async function vendors(el) {
     <div class="page-head"><div><h1>Vendors</h1><div class="muted">Contact numbers and delivery style are shown to coordinators when they place orders.</div></div>
       <button class="btn primary" id="add">+ Add vendor</button></div>
     <div class="row" style="margin-bottom:.75rem"><input id="s" placeholder="Search vendors…" style="max-width:300px">
-      <select id="st" style="max-width:180px"><option value="">All</option><option value="true">Active</option><option value="false">Inactive</option></select></div>
+      <select id="st" style="max-width:200px"><option value="">All</option><option value="true">Active</option><option value="false">Inactive</option><option value="pending">Waiting approval (${rows.filter((v) => v.approval === "pending").length})</option></select></div>
     <div class="table-wrap"><table><thead><tr><th>Vendor</th><th>Contact</th><th>Phone numbers</th><th>Delivery</th><th class="right">Products</th><th>Status</th><th></th></tr></thead><tbody>
-    ${rows.map((v) => `<tr data-n="${esc(v.name.toLowerCase())}" data-a="${v.active}">
-      <td><b>${esc(v.name)}</b><div class="small muted">${esc(v.address || "")}</div></td><td>${esc(v.contact_person || "")}</td>
+    ${rows.map((v) => `<tr data-n="${esc(v.name.toLowerCase())}" data-a="${v.approval === "pending" ? "pending" : v.active}">
+      <td><b>${esc(v.name)}</b>${v.approval === "pending" ? ' <span class="badge warn">Waiting approval</span>' : v.approval === "rejected" ? ' <span class="badge danger">Rejected</span>' : ""}<div class="small muted">${esc(v.address || "")}</div>${v.signup_note ? `<div class="small">Supplies: ${esc(v.signup_note)}</div>` : ""}</td><td>${esc(v.contact_person || "")}</td>
       <td class="phones">${telLinks(v.phones)}</td><td>${esc(DELIVERY_LABEL[v.delivery_style])}</td>
       <td class="right">${v.boh_vendor_rates?.[0]?.count ?? 0}</td>
       <td><button class="btn sm" data-tog="${v.id}" data-on="${v.active}">${v.active ? "✅ Active" : "⛔ Inactive"}</button>
         ${!v.active && v.disabled_at ? `<div class="small muted">Disabled ${fmtD(v.disabled_at)}${v.disabled_reason ? " — " + esc(v.disabled_reason) : ""}</div>` : ""}</td>
-      <td class="right"><button class="btn sm" data-edit="${v.id}">Edit</button></td></tr>`).join("") || '<tr><td colspan="7" class="empty">No vendors yet.</td></tr>'}
+      <td class="right" style="white-space:nowrap">${v.approval === "pending" ? `<button class="btn sm primary" data-appr="${v.id}">Review</button> ` : ""}<button class="btn sm" data-login="${v.id}">Portal login</button> <button class="btn sm" data-edit="${v.id}">Edit</button></td></tr>`).join("") || '<tr><td colspan="7" class="empty">No vendors yet.</td></tr>'}
     </tbody></table></div>`;
   const filter = () => $$("tr[data-n]", el).forEach((tr) => tr.classList.toggle("hidden", !(tr.dataset.n.includes($("#s").value.toLowerCase()) && (!$("#st").value || tr.dataset.a === $("#st").value))));
   $("#s").oninput = filter; $("#st").onchange = filter;
   $("#add").onclick = () => vendorEditor(null, () => vendors(el));
+  $$("[data-appr]", el).forEach((b) => (b.onclick = () => reviewVendor(rows.find((v) => v.id === b.dataset.appr), () => vendors(el))));
+  $$("[data-login]", el).forEach((b) => (b.onclick = () => vendorLogins(rows.find((v) => v.id === b.dataset.login))));
   $$("[data-edit]", el).forEach((b) => (b.onclick = () => vendorEditor(b.dataset.edit, () => vendors(el))));
   $$("[data-tog]", el).forEach((b) => (b.onclick = async () => {
     const on = b.dataset.on === "true";
@@ -949,14 +963,24 @@ export async function categories(el) {
   el.innerHTML = `
     <div class="page-head"><div><h1>Categories & default margins</h1><div class="muted">The default mark-up pre-fills each new restaurant. Change per restaurant, then per product.</div></div>
       <button class="btn primary" id="add">+ Add category</button></div>
-    <div class="table-wrap"><table><thead><tr><th>Category</th><th class="right">Default mark-up %</th><th class="right">Sort</th><th class="right">Products</th><th>Active</th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th>Category</th><th class="right">Default mark-up %</th><th class="right">Sort</th><th class="right">Products</th><th>No delivery on ${state.me.role === "super_admin" ? "" : '<span class="small muted">(super admin sets)</span>'}</th><th>Active</th></tr></thead><tbody>
     ${cats.map((c) => `<tr>
       <td><input data-f="name" data-id="${c.id}" value="${esc(c.name)}"></td>
       <td class="right"><input type="number" step="0.01" data-f="default_margin" data-id="${c.id}" value="${c.default_margin}" style="width:110px"></td>
       <td class="right"><input type="number" data-f="sort" data-id="${c.id}" value="${c.sort}" style="width:80px"></td>
       <td class="right">${c.boh_products?.[0]?.count ?? 0}</td>
+      <td style="white-space:nowrap">${[1, 2, 3, 4, 5, 6, 7].map((d) => `<label class="dayoff ${(c.off_days || []).includes(d) ? "on" : ""}" title="${DAYS[d]}"><input type="checkbox" data-off="${c.id}" value="${d}" ${(c.off_days || []).includes(d) ? "checked" : ""} ${state.me.role === "super_admin" ? "" : "disabled"}>${DAYS[d][0]}${DAYS[d][1]}</label>`).join("")}</td>
       <td><input type="checkbox" data-f="active" data-id="${c.id}" ${c.active ? "checked" : ""}></td></tr>`).join("")}
-    </tbody></table></div>`;
+    </tbody></table></div>
+    <p class="small muted">Days off: no delivery for that category on those weekdays. Orders move to the next delivery day (an order is split if needed), and auto-orders cover the extra day(s).</p>`;
+  $$("[data-off]", el).forEach((i) => (i.onchange = async () => {
+    const id = i.dataset.off;
+    const days = $$(`[data-off="${id}"]`, el).filter((x) => x.checked).map((x) => Number(x.value));
+    if (days.length >= 7) { i.checked = false; return toast("At least one delivery day is needed", true); }
+    await q(sb.from("boh_categories").update({ off_days: days }).eq("id", id));
+    i.closest("label").classList.toggle("on", i.checked);
+    toast(days.length ? "No delivery on " + days.map((d) => DAYS[d]).join(", ") : "Delivers every day");
+  }));
   $$("[data-f]", el).forEach((i) => (i.onchange = async () => {
     const val = i.type === "checkbox" ? i.checked : i.type === "number" ? Number(i.value) : i.value;
     await q(sb.from("boh_categories").update({ [i.dataset.f]: val }).eq("id", i.dataset.id)); toast("Saved");

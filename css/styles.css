@@ -168,3 +168,8 @@ a.btn { text-decoration: none; }
 .linkbtn { background: none; border: 0; padding: 0; color: var(--brand-2, #7a5a2f); cursor: pointer; text-decoration: underline; font: inherit; }
 .linkbtn.small { font-size: .78rem; margin-top: .15rem; }
 .olist .item .linkbtn { display: inline-block; }
+
+/* category days off */
+.dayoff { display: inline-flex; align-items: center; gap: 2px; font-size: .72rem; padding: .15rem .3rem; margin-right: 2px; border: 1px solid #e3ddd2; border-radius: 6px; cursor: pointer; font-weight: 500; }
+.dayoff input { width: auto; margin: 0; }
+.dayoff.on { background: #fde8e4; border-color: #e8b4a8; color: #a23b26; }

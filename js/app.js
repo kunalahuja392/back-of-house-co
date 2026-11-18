@@ -1,8 +1,10 @@
-import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=18";
-import * as admin from "./admin.js?v=18";
-import * as reports from "./reports.js?v=18";
-import * as coord from "./coordinator.js?v=18";
-import * as cust from "./customer.js?v=18";
+import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=19";
+import * as admin from "./admin.js?v=19";
+import * as reports from "./reports.js?v=19";
+import * as coord from "./coordinator.js?v=19";
+import * as cust from "./customer.js?v=19";
+import * as growth from "./growth.js?v=19";
+import * as vend from "./vendor.js?v=19";
 
 const root = document.getElementById("root");
 
@@ -15,18 +17,23 @@ const MENUS = {
     ["requests", "🙋", "Product requests", admin.requests],
     ["enquiries", "💬", "Enquiries", admin.enquiries],
     ["pricereports", "💡", "Cheaper vendors", admin.priceReports],
+    ["leads", "🌐", "Website enquiries", growth.leads],
     ["complaints", "⚠️", "Complaints", admin.complaints],
     ["Catalogue"],
     ["restaurants", "🍽️", "Restaurants", admin.restaurants],
     ["products", "📦", "Products & rates", admin.products],
     ["vendors", "🚚", "Vendors", admin.vendors],
+    ["voffers", "🏷️", "Vendor offers", growth.vendorOffers],
     ["categories", "🗂️", "Categories & margins", admin.categories],
     ["showcase", "🖼️", "Showcase slideshow", admin.showcase],
+    ["Online shop"],
+    ["shop", "🛒", "Shop products & orders", growth.shop],
     ["Insights"],
     ["reports", "📈", "Reports", reports.reports],
     ["Admin"],
     ["team", "👥", "Team & logins", admin.team],
     ["notifications", "🔔", "Notifications", admin.notifications],
+    ["features", "🔓", "Feature access", growth.features],
     ["settings", "⚙️", "Settings", admin.settings, "super_admin"],
   ],
   coordinator: [
@@ -38,13 +45,19 @@ const MENUS = {
     ["home", "🏠", "Home", cust.home],
     ["order", "🛒", "Place order", cust.placeOrder],
     ["myorders", "🧾", "My orders", cust.myOrders],
+    ["stock", "📋", "Stock & auto-order", cust.stock],
     ["browse", "🔎", "Browse & request", cust.browse],
     ["complaints", "⚠️", "Complaints", cust.complaints],
+  ],
+  vendor: [
+    ["vhome", "🏠", "Home", vend.vhome],
+    ["vorders", "📦", "Orders", vend.vorders],
+    ["vproducts", "🏷️", "My products & rates", vend.vproducts],
   ],
 };
 
 function menuFor(role) {
-  const m = role === "customer" ? MENUS.customer : role === "coordinator" ? MENUS.coordinator : MENUS.staff;
+  const m = role === "customer" ? MENUS.customer : role === "coordinator" ? MENUS.coordinator : role === "vendor" ? MENUS.vendor : MENUS.staff;
   return m.filter((i) => i.length === 1 || !i[4] || i[4] === role);
 }
 
@@ -182,15 +195,20 @@ function shell() {
 
 async function refreshCounts() {
   if (!["admin", "super_admin"].includes(state.me.role)) return;
-  const [o, r, c, e, p] = await Promise.all([
+  const [o, r, c, e, p, l, vo, so, fa] = await Promise.all([
     sb.from("boh_orders").select("id", { count: "exact", head: true }).neq("status", "cancelled").or("status.eq.placed,payment_status.eq.under_review"),
     sb.from("boh_product_requests").select("id", { count: "exact", head: true }).eq("status", "pending"),
     sb.from("boh_complaints").select("id", { count: "exact", head: true }).neq("status", "resolved"),
     sb.from("boh_enquiries").select("id", { count: "exact", head: true }).eq("status", "new"),
     sb.from("boh_price_reports").select("id", { count: "exact", head: true }).eq("status", "new"),
+    sb.from("boh_leads").select("id", { count: "exact", head: true }).eq("status", "new"),
+    sb.from("boh_vendor_offers").select("id", { count: "exact", head: true }).eq("status", "pending"),
+    sb.from("boh_shop_orders").select("id", { count: "exact", head: true }).neq("status", "cancelled").or("status.eq.placed,payment_status.eq.under_review"),
+    sb.from("boh_feature_access").select("id", { count: "exact", head: true }).eq("status", "requested"),
   ]);
   const set = (k, n) => { const el = $(`[data-count="${k}"]`); if (el) { el.textContent = n; el.classList.toggle("hidden", !n); } };
   set("orders", o.count); set("requests", r.count); set("complaints", c.count); set("enquiries", e.count); set("pricereports", p.count);
+  set("leads", l.count); set("voffers", vo.count); set("shop", so.count); set("features", fa.count);
 }
 window.bohRefreshCounts = refreshCounts;
 
@@ -214,8 +232,15 @@ async function loadMe(session) {
     await sb.auth.signOut();
     return loginView("This login is not set up for Back of House Co, or has been deactivated. Please contact the team.");
   }
+  if (me.role === "shopper") {
+    root.innerHTML = `<div class="login"><div class="card" style="max-width:460px;margin:4rem auto"><h2>Hi ${esc(me.full_name)}</h2>
+      <p>This login is for the Back of House Co online shop. Shop and see your orders on our website.</p>
+      <div class="row"><a class="btn primary" href="https://backofhouseco.in/shop.html">Go to the shop →</a><button class="btn" id="so">Sign out</button></div></div></div>`;
+    $("#so").onclick = () => sb.auth.signOut();
+    return;
+  }
   state.me = me;
-  state.settings = await q(sb.from("boh_settings").select("*").eq("id", 1).single());
+  state.settings = me.role === "vendor" ? await q(sb.rpc("boh_site_info")) : await q(sb.from("boh_settings").select("*").eq("id", 1).single());
   shell();
 }
 

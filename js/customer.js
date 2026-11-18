@@ -1,4 +1,4 @@
-import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, q, statusBadge, telLinks, payBadge, PAY_MODE } from "./lib.js?v=18";
+import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, promptBox, q, statusBadge, telLinks, payBadge, PAY_MODE, todayIST, tabs } from "./lib.js?v=19";
 
 const CART_KEY = () => "boh_cart_" + state.me.restaurant_id;
 const loadCart = () => { try { return JSON.parse(localStorage.getItem(CART_KEY()) || "{}"); } catch { return {}; } };
@@ -173,8 +173,21 @@ async function productDetail(p, cat, slide) {
 }
 
 // ====================================================================== PLACE ORDER
+const DAYN = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+async function deliveryInfo(cat) {
+  const [dl, pr] = await Promise.all([
+    q(sb.rpc("boh_category_delivery")),
+    cat.length ? q(sb.from("boh_products").select("id, moq").in("id", cat.map((c) => c.product_id))) : [],
+  ]);
+  const base = dl.reduce((m, d) => (!m || d.delivery_date < m ? d.delivery_date : m), null);
+  return { byCat: Object.fromEntries(dl.map((d) => [d.category_id, d])), base, moq: Object.fromEntries(pr.filter((p) => p.moq).map((p) => [p.id, Number(p.moq)])) };
+}
+const dayLabel = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
+
 export async function placeOrder(el) {
   const cat = await myCatalog(true);
+  const DI = await deliveryInfo(cat);
+  const late = (p) => { const d = DI.byCat[p.category_id]; return d && DI.base && d.delivery_date > DI.base ? d : null; };
   let cart = loadCart();
   // drop anything no longer on the list
   Object.keys(cart).forEach((k) => { if (!cat.find((c) => c.product_id === k)) delete cart[k]; });
@@ -186,6 +199,8 @@ export async function placeOrder(el) {
     <div class="page-head"><div><h1>Place order</h1><div class="muted">Your ordering list with your prices. Enter quantities and review.</div></div>
       <div class="row"><button class="btn" id="repeat">↻ Repeat last order</button><button class="btn" id="clear">Clear</button></div></div>
     <div class="notice ${ci.open ? "green" : ""}">${ci.html}</div>
+    ${(() => { const ls = [...new Map(cat.filter(late).map((p) => [p.category_id, [p.category_name, late(p)]])).values()];
+      return ls.length ? `<div class="notice">🗓️ Delivery days off: ${ls.map(([n, d]) => `<b>${esc(n)}</b> — no delivery ${d.off_days.map((x) => DAYN[x]).join(", ")}, so these items come <b>${dayLabel(d.delivery_date)}</b>`).join(" · ")}. Your order is split automatically.</div>` : ""; })()}
     ${cat.length ? `
     <div class="row" style="margin-bottom:.75rem"><input id="s" placeholder="Search your list…" style="max-width:320px">
       <select id="c" style="max-width:240px"><option value="">All categories</option>${cats.map(([id, n]) => `<option value="${id}">${esc(n)}</option>`).join("")}</select>
@@ -196,6 +211,8 @@ export async function placeOrder(el) {
       ${cat.map((p) => `<div class="item" data-id="${p.product_id}" data-n="${esc((p.product_name + " " + (p.brand || "")).toLowerCase())}" data-c="${p.category_id}">
         <div class="pic" ${p.image_url ? `style="background-image:url('${esc(p.image_url)}')"` : ""}>${p.image_url ? "" : "📦"}</div>
         <div class="nm"><b>${esc(p.product_name)}</b>${p.brand ? ` <span class="small muted">${esc(p.brand)}</span>` : ""}<div class="small muted">${esc(p.category_name)}</div>
+          ${DI.moq[p.product_id] ? `<span class="badge info" title="Minimum order quantity">Min ${num(DI.moq[p.product_id], 3)} ${esc(p.unit)}</span>` : ""}
+          ${late(p) ? `<span class="badge warn" title="Day off for this category">🗓 ${dayLabel(late(p).delivery_date)}</span>` : ""}
           <button class="linkbtn small" type="button" data-cheap title="Tell us if you found a lower price">💡 Found it cheaper?</button></div>
         <div class="pr">${p.price == null ? '<span class="small muted">Price on request</span>' : money(p.price) + ` <span class="small muted">/${esc(p.unit)}</span>`}</div>
         <div class="qty"><button class="btn sm" data-dec>−</button><input type="number" min="0" step="any" data-q value="${cart[p.product_id] || ""}" ${p.price == null ? "disabled" : ""}><button class="btn sm" data-inc>+</button></div>
@@ -226,7 +243,8 @@ export async function placeOrder(el) {
   $$(".item[data-id]", el).forEach((tr) => {
     const inp = $("[data-q]", tr);
     inp.oninput = recalc;
-    $("[data-inc]", tr).onclick = () => { if (!inp.disabled) { inp.value = (Number(inp.value) || 0) + 1; recalc(); } };
+    const mq = DI.moq[tr.dataset.id] || 0;
+    $("[data-inc]", tr).onclick = () => { if (!inp.disabled) { inp.value = Math.max(mq, (Number(inp.value) || 0) + 1); recalc(); } };
     $("[data-dec]", tr).onclick = () => { inp.value = Math.max(0, (Number(inp.value) || 0) - 1) || ""; recalc(); };
   });
   $$("[data-cheap]", el).forEach((b) => (b.onclick = () => reportCheaper(byId[b.closest(".item").dataset.id])));
@@ -248,10 +266,14 @@ export async function placeOrder(el) {
   $("#review").onclick = () => {
     const items = Object.entries(cart).filter(([, v]) => v > 0).map(([id, qty]) => ({ product_id: id, qty, p: byId[id] }));
     if (!items.length) return toast("Add quantities first", true);
+    const under = items.filter((i) => DI.moq[i.product_id] && i.qty < DI.moq[i.product_id]);
+    if (under.length) return toast(`Minimum order: ${under.map((i) => `${i.p.product_name} ${num(DI.moq[i.product_id], 3)} ${i.p.unit}`).join(", ")}`, true);
+    const dates = [...new Set(items.map((i) => (DI.byCat[i.p.category_id]?.delivery_date) || DI.base))].sort();
     const total = items.reduce((a, i) => a + i.qty * Number(i.p.price), 0);
     const m = modal({
       title: "Review your order",
       body: `<div class="notice ${cutoffInfo().open ? "green" : ""}">${cutoffInfo().html}</div>
+        ${dates.length > 1 ? `<div class="notice">🗓️ This will be placed as <b>${dates.length} orders</b> because of category days off: ${dates.map((d) => `<b>${dayLabel(d)}</b> — ${esc([...new Set(items.filter((i) => ((DI.byCat[i.p.category_id]?.delivery_date) || DI.base) === d).map((i) => i.p.category_name))].join(", "))}`).join(" · ")}</div>` : ""}
         <table><thead><tr><th>Product</th><th class="right">Qty</th><th class="right">Price</th><th class="right">Amount</th></tr></thead><tbody>
         ${items.map((i) => `<tr><td>${esc(i.p.product_name)}</td><td class="right">${num(i.qty, 3)} ${esc(i.p.unit)}</td><td class="right">${money(i.p.price)}</td><td class="right">${money(i.qty * i.p.price)}</td></tr>`).join("")}
         <tr><td colspan="3"><b>Total</b></td><td class="right"><b>${money(total)}</b></td></tr></tbody></table>
@@ -270,7 +292,7 @@ export async function placeOrder(el) {
         const mode = $('[name="pm"]:checked', m.el).value;
         const oid = await q(sb.rpc("boh_place_order", { p_items: items.map(({ product_id, qty }) => ({ product_id, qty })), p_notes: $("#nt", m.el).value || null, p_payment_mode: mode }));
         cart = {}; saveCart(cart); m.close();
-        toast("Order placed! Your coordinator will take it from here.");
+        toast(dates.length > 1 ? `${dates.length} orders placed (split by delivery day)! Your coordinator will take it from here.` : "Order placed! Your coordinator will take it from here.");
         location.hash = "#/myorders";
         if (mode === "prepaid") {
           const o = await q(sb.from("boh_orders").select("*").eq("id", oid).single());
@@ -470,4 +492,106 @@ export async function complaints(el) {
       <td><span class="badge ${c.status === "resolved" ? "ok" : c.status === "in_progress" ? "info" : "warn"}">${c.status.replace("_", " ")}</span></td><td class="small">${esc(c.resolution || "")}</td></tr>`).join("") || '<tr><td colspan="6" class="empty">No complaints.</td></tr>'}
     </tbody></table></div>`;
   $("#new").onclick = () => complaintForm(null, () => complaints(el));
+}
+
+// ====================================================================== STOCK & AUTO-ORDER (feature switched on by the super admin)
+export async function stock(el) {
+  const fa = await q(sb.from("boh_feature_access").select("*").eq("feature", "auto_order").eq("restaurant_id", state.me.restaurant_id));
+  const st = fa[0]?.status || "off";
+  if (st !== "active") {
+    el.innerHTML = `<div class="page-head"><h1>Stock & auto-order</h1></div><div class="card" style="max-width:640px">
+      <h2>📋 Daily stock count & automatic ordering</h2>
+      <p>Count your stock at the end of the day. For each product you set a reorder level and either a <b>target level</b> (we top you up to it) or a <b>fixed reorder quantity</b>. At the time you choose, the order is placed automatically for everything that is low — no typing.</p>
+      ${st === "requested" ? '<span class="badge warn">Requested — waiting for approval</span>' : `${st === "declined" ? '<p class="small" style="color:var(--danger)">Your last request was declined.</p>' : ""}<button class="btn primary" id="req">Request access</button>`}</div>`;
+    $("#req")?.addEventListener("click", async () => {
+      const note = await promptBox("Request Stock & auto-order", "Anything we should know? (optional)"); if (note === null) return;
+      await q(sb.rpc("boh_request_feature", { p_feature: "auto_order", p_note: note || null })); toast("Request sent"); stock(el);
+    });
+    return;
+  }
+  const today = todayIST();
+  el.innerHTML = `<div class="page-head"><div><h1>Stock & auto-order</h1><div class="muted">End-of-day count → automatic order for what's running low.</div></div></div>
+    <div class="tabs" id="t"></div><div id="body"></div>`;
+  const show = async (i) => {
+    const box = $("#body");
+    if (i === 0) return countTab(box, today);
+    if (i === 1) return levelsTab(box);
+    return autoTab(box);
+  };
+  tabs($("#t"), ["Today's stock count", "Reorder levels", "Auto-order"], show);
+}
+
+async function countTab(box, today) {
+  const rows = await q(sb.rpc("boh_stock_list", { p_date: today }));
+  const cats = [...new Set(rows.map((r) => r.category_name))];
+  box.innerHTML = `<div class="row" style="margin:.5rem 0"><input id="s" placeholder="Search…" style="max-width:280px"><span class="grow"></span>
+      <button class="btn" id="copy">Fill with last count</button><button class="btn primary" id="save">Save count</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Product</th><th class="right">Last count</th><th class="right">Reorder at</th><th style="width:140px">Stock now</th></tr></thead><tbody>
+    ${cats.map((c) => `<tr><td colspan="4" style="background:#faf8f4"><b>${esc(c)}</b></td></tr>` + rows.filter((r) => r.category_name === c).map((r) => `<tr data-r="${r.product_id}" data-n="${esc(r.product_name.toLowerCase())}">
+      <td>${esc(r.product_name)} <span class="small muted">/${esc(r.unit)}</span>${r.auto ? ' <span class="badge info">auto</span>' : ""}</td>
+      <td class="right small">${r.last_qty != null ? num(r.last_qty, 3) + `<div class="muted">${fmtD(r.last_date)}</div>` : "—"}</td>
+      <td class="right">${r.reorder_level != null && r.auto ? num(r.reorder_level, 3) : "—"}</td>
+      <td><input type="number" min="0" step="any" data-c value="${r.count_qty ?? ""}" data-last="${r.last_qty ?? ""}"></td></tr>`).join("")).join("") || '<tr><td colspan="4" class="empty">Your ordering list is empty.</td></tr>'}
+    </tbody></table></div><p class="small muted">Leave blank for items you didn't count. Products marked <b>auto</b> are ordered automatically when stock is at or below the reorder level.</p>`;
+  $("#s", box).oninput = (e) => $$("[data-r]", box).forEach((tr) => tr.classList.toggle("hidden", !tr.dataset.n.includes(e.target.value.toLowerCase())));
+  $("#copy", box).onclick = () => $$("[data-c]", box).forEach((i) => { if (i.value === "" && i.dataset.last !== "") i.value = i.dataset.last; });
+  $("#save", box).onclick = async () => {
+    const rowsOut = $$("[data-r]", box).map((tr) => ({ product_id: tr.dataset.r, qty: $("[data-c]", tr).value }));
+    if (rowsOut.some((r) => r.qty !== "" && Number(r.qty) < 0)) return toast("Stock cannot be negative", true);
+    const n = await q(sb.rpc("boh_save_stock_count", { p_rows: rowsOut, p_date: today }));
+    toast(`Saved ${n} counts`);
+  };
+}
+
+async function levelsTab(box) {
+  const rows = await q(sb.rpc("boh_stock_list"));
+  box.innerHTML = `<div class="notice">For each product: <b>Top up</b> → when stock ≤ reorder level, order enough to reach the target level. <b>Fixed qty</b> → order the same quantity every time.
+    Before a category's delivery day off, the order automatically covers the extra day(s). Minimum order quantities (MOQ) are respected.</div>
+    <div class="row" style="margin:.5rem 0"><span class="grow"></span><button class="btn primary" id="save">Save levels</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Auto</th><th>Product</th><th>Method</th><th>Reorder level</th><th>Target level</th><th>Reorder qty</th><th class="right">MOQ</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr data-r="${r.product_id}"><td><input type="checkbox" data-a ${r.auto ? "checked" : ""}></td>
+      <td>${esc(r.product_name)} <span class="small muted">/${esc(r.unit)} · ${esc(r.category_name)}</span></td>
+      <td><select data-m style="min-width:120px"><option value="topup" ${r.method === "topup" ? "selected" : ""}>Top up to target</option><option value="fixed" ${r.method === "fixed" ? "selected" : ""}>Fixed qty</option></select></td>
+      <td><input type="number" step="any" min="0" data-rl value="${r.reorder_level ?? ""}" style="max-width:110px"></td>
+      <td><input type="number" step="any" min="0" data-tl value="${r.target_level ?? ""}" style="max-width:110px"></td>
+      <td><input type="number" step="any" min="0" data-rq value="${r.reorder_qty ?? ""}" style="max-width:110px"></td>
+      <td class="right">${r.moq ? num(r.moq, 3) : "—"}</td></tr>`).join("") || '<tr><td colspan="7" class="empty">Your ordering list is empty.</td></tr>'}</tbody></table></div>`;
+  const sync = (tr) => { const fixed = $("[data-m]", tr).value === "fixed"; $("[data-tl]", tr).disabled = fixed; $("[data-rq]", tr).disabled = !fixed; };
+  $$("[data-r]", box).forEach((tr) => { sync(tr); $("[data-m]", tr).onchange = () => sync(tr); });
+  $("#save", box).onclick = async () => {
+    const out = $$("[data-r]", box).map((tr) => ({ product_id: tr.dataset.r, auto: $("[data-a]", tr).checked, method: $("[data-m]", tr).value,
+      reorder_level: $("[data-rl]", tr).value, target_level: $("[data-tl]", tr).value, reorder_qty: $("[data-rq]", tr).value }));
+    const bad = out.find((r) => r.auto && (r.reorder_level === "" || (r.method === "topup" ? !(Number(r.target_level) > Number(r.reorder_level)) : !(Number(r.reorder_qty) > 0))));
+    if (bad) return toast("For every auto product set the reorder level, and a target above it (top up) or a reorder qty (fixed)", true);
+    await q(sb.rpc("boh_save_stock_settings", { p_rows: out })); toast("Levels saved");
+  };
+}
+
+async function autoTab(box) {
+  const [cfg, prev] = await Promise.all([
+    q(sb.from("boh_auto_order_config").select("*").eq("restaurant_id", state.me.restaurant_id).maybeSingle()),
+    q(sb.rpc("boh_auto_order_preview")),
+  ]);
+  const c = cfg || { enabled: false, order_time: "22:00", payment_mode: "cod" };
+  const total = prev.reduce((a, r) => a + Number(r.line_total || 0), 0);
+  box.innerHTML = `<div class="grid" style="grid-template-columns:minmax(260px,380px) 1fr;gap:1rem;align-items:start">
+    <div class="card"><h2>Auto-order settings</h2>
+      <label class="row" style="gap:.4rem"><input type="checkbox" id="en" ${c.enabled ? "checked" : ""}> <b>Place my order automatically every day</b></label>
+      <div class="field" style="margin-top:.6rem"><label>Order time</label><input type="time" id="tm" value="${String(c.order_time).slice(0, 5)}">
+        <div class="small muted">Count your stock before this time. Orders before ${String(state.settings.order_cutoff || "16:00").slice(0, 5)} are delivered the next day; later ones the day after.</div></div>
+      <div class="field"><label>Payment</label><select id="pm"><option value="cod" ${c.payment_mode === "cod" ? "selected" : ""}>Pay on delivery</option><option value="prepaid" ${c.payment_mode === "prepaid" ? "selected" : ""}>Pre-pay</option></select></div>
+      <div class="field"><label>Note on every auto order (optional)</label><input id="nt" value="${esc(c.notes || "")}"></div>
+      <button class="btn primary" id="save">Save</button>
+      ${c.last_run_date ? `<p class="small" style="margin-top:.8rem">Last run ${fmtD(c.last_run_date)}: ${esc(c.last_result || "")}</p>` : ""}</div>
+    <div class="card"><h2>If it ran now (from today's count)</h2>
+      ${prev.length ? `<table><thead><tr><th>Product</th><th class="right">Stock</th><th class="right">Order</th><th>Delivery</th><th class="right">Amount</th></tr></thead><tbody>
+        ${prev.map((r) => `<tr><td>${esc(r.product_name)}</td><td class="right">${num(r.stock, 3)}</td><td class="right"><b>${num(r.order_qty, 3)}</b> ${esc(r.unit)}
+          ${r.days_covered > 1 ? `<div class="small muted">covers ${r.days_covered} days</div>` : ""}${r.moq && Number(r.order_qty) === Number(r.moq) ? '<div class="small muted">MOQ</div>' : ""}</td>
+          <td class="small">${dayLabel(r.delivery_date)}</td><td class="right">${money(r.line_total)}</td></tr>`).join("")}
+        <tr><td colspan="4"><b>Total</b></td><td class="right"><b>${money(total)}</b></td></tr></tbody></table>`
+      : '<p class="muted">Nothing to order — either no count saved today, or everything is above its reorder level.</p>'}</div></div>`;
+  $("#save", box).onclick = async () => {
+    await q(sb.rpc("boh_save_auto_config", { p_enabled: $("#en", box).checked, p_time: $("#tm", box).value || "22:00", p_payment_mode: $("#pm", box).value, p_notes: $("#nt", box).value || null }));
+    toast($("#en", box).checked ? "Auto-order is on" : "Auto-order is off");
+  };
 }

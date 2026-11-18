@@ -37,13 +37,14 @@ Deno.serve(async (req) => {
     }
 
     if (!me || !me.active || !["super_admin", "admin"].includes(me.role)) return json({ error: "Admins only" }, 403);
-    const canManage = (role: string) => me.role === "super_admin" || ["coordinator", "customer"].includes(role);
+    const canManage = (role: string) => me.role === "super_admin" || ["coordinator", "customer", "vendor"].includes(role);
 
     if (action === "create_user") {
       const role = String(body.role);
-      if (!["super_admin", "admin", "coordinator", "customer"].includes(role)) return json({ error: "Invalid role" }, 400);
+      if (!["super_admin", "admin", "coordinator", "customer", "vendor"].includes(role)) return json({ error: "Invalid role" }, 400);
       if (!canManage(role)) return json({ error: "Only the super admin can create admins" }, 403);
       if (role === "customer" && !body.restaurant_id) return json({ error: "Pick the restaurant for this login" }, 400);
+      if (role === "vendor" && !body.vendor_id) return json({ error: "Pick the vendor for this login" }, 400);
       const email = String(body.email || "").trim().toLowerCase();
       if (!email || !body.password || String(body.password).length < 8)
         return json({ error: "Email and a password of at least 8 characters are required" }, 400);
@@ -53,7 +54,7 @@ Deno.serve(async (req) => {
       const id = created.data.user!.id;
       const { error } = await admin.from("boh_users").insert({
         id, email, full_name: body.full_name || email, phone: body.phone || null,
-        role, restaurant_id: role === "customer" ? body.restaurant_id : null, active: true,
+        role, restaurant_id: role === "customer" ? body.restaurant_id : null, vendor_id: role === "vendor" ? body.vendor_id : null, active: true,
       });
       if (error) {
         await admin.auth.admin.deleteUser(id);
