@@ -1,5 +1,5 @@
-import { sb, state, $, $$, esc, money, fmtDT, fmtD, q, statusBadge, payBadge, PAY_MODE, dueText, allocSteps, telLinks, DELIVERY_LABEL, orderAlloc, flowGuide, flowHTML, openBill } from "./lib.js?v=21";
-import { orderModal, advanceOrder, changeVendor, paymentButtons, bindPaymentButtons, paymentAction } from "./admin.js?v=21";
+import { sb, state, $, $$, esc, money, fmtDT, fmtD, q, statusBadge, payBadge, PAY_MODE, dueText, allocSteps, telLinks, DELIVERY_LABEL, orderAlloc, flowGuide, flowHTML, openBill } from "./lib.js?v=22";
+import { orderModal, advanceOrder, changeVendor, paymentButtons, bindPaymentButtons, paymentAction } from "./admin.js?v=22";
 
 // one card per order allocated to me: where it is, what to do now, whom to call
 export async function tasks(el) {

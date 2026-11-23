@@ -1,10 +1,10 @@
-import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=21";
-import * as admin from "./admin.js?v=21";
-import * as reports from "./reports.js?v=21";
-import * as coord from "./coordinator.js?v=21";
-import * as cust from "./customer.js?v=21";
-import * as growth from "./growth.js?v=21";
-import * as vend from "./vendor.js?v=21";
+import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=22";
+import * as admin from "./admin.js?v=22";
+import * as reports from "./reports.js?v=22";
+import * as coord from "./coordinator.js?v=22";
+import * as cust from "./customer.js?v=22";
+import * as growth from "./growth.js?v=22";
+import * as vend from "./vendor.js?v=22";
 
 const root = document.getElementById("root");
 

@@ -1,4 +1,4 @@
-import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, promptBox, q, statusBadge, telLinks, payBadge, PAY_MODE, todayIST, tabs, openBill, billNo } from "./lib.js?v=21";
+import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, promptBox, q, statusBadge, telLinks, payBadge, PAY_MODE, todayIST, tabs, openBill, billNo } from "./lib.js?v=22";
 
 const CART_KEY = () => "boh_cart_" + state.me.restaurant_id;
 const loadCart = () => { try { return JSON.parse(localStorage.getItem(CART_KEY()) || "{}"); } catch { return {}; } };

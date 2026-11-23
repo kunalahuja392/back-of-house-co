@@ -3,8 +3,8 @@ import {
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox, orderAlloc, canDeliver,
   flowGuide, flowHTML, openBill, billNo, billTitle, PAYMENT_METHODS,
-} from "./lib.js?v=21";
-import { DAYS, reviewVendor, vendorLogins, listingEditor } from "./growth.js?v=21";
+} from "./lib.js?v=22";
+import { DAYS, reviewVendor, vendorLogins, listingEditor } from "./growth.js?v=22";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);

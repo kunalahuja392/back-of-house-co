@@ -192,5 +192,5 @@ a.btn { text-decoration: none; }
 .pipe button b { display: block; font-size: 1.25rem; }
 .pipe button.on { border-color: var(--accent, #c2410c); box-shadow: 0 0 0 2px rgba(194, 65, 12, .15); }
 .pipe button small { color: #6b665e; }
-.bill-lines td input { width: 90px; }
+.bill-lines td input { width: 110px; }
 @media (max-width: 640px) { .flow-step em { font-size: 9px; } }

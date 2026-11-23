@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=21";
+import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=22";
 
 export const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -348,7 +348,7 @@ export function invoiceHTML(d, names = {}) {
   const st = o.status === "cancelled" ? ["CANCELLED", "#b3261e"] : paid ? ["PAID", "#1b7f3b"] : o.invoice_no ? ["PAYMENT DUE", "#b26a00"] : null;
   const bank = c.account_no ? `${esc(c.bank_name || "")} · A/c ${esc(c.account_no)}${c.ifsc ? " · IFSC " + esc(c.ifsc) : ""}${c.account_name ? "<br>A/c name: " + esc(c.account_name) : ""}${c.branch ? " · " + esc(c.branch) : ""}` : "";
   return `<div class="inv" style="font-family:Inter,Segoe UI,Arial,sans-serif;color:#1f1d1a;background:#fff;width:760px;max-width:100%;margin:0 auto;padding:28px 30px;box-sizing:border-box;font-size:12.5px;line-height:1.45;position:relative">
-    ${st ? `<div style="position:absolute;top:120px;right:40px;transform:rotate(-12deg);border:3px solid ${st[1]};color:${st[1]};font-weight:800;font-size:22px;letter-spacing:2px;padding:4px 14px;border-radius:8px;opacity:.75">${st[0]}</div>` : ""}
+    ${st ? `<div style="position:absolute;top:86px;left:42%;transform:rotate(-10deg);border:3px solid ${st[1]};color:${st[1]};font-weight:800;font-size:22px;letter-spacing:2px;padding:4px 14px;border-radius:8px;opacity:.75">${st[0]}</div>` : ""}
     <table style="width:100%;border-collapse:collapse"><tr>
       <td style="vertical-align:top">
         <div style="display:flex;align-items:center;gap:10px"><div style="width:38px;height:38px;border-radius:9px;background:#1f3a2e;color:#fff;font-weight:800;font-size:20px;display:flex;align-items:center;justify-content:center">B</div>
