@@ -1,12 +1,26 @@
-import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, promptBox, q, statusBadge, telLinks, payBadge, PAY_MODE, todayIST, tabs } from "./lib.js?v=19";
+import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, promptBox, q, statusBadge, telLinks, payBadge, PAY_MODE, todayIST, tabs } from "./lib.js?v=20";
 
 const CART_KEY = () => "boh_cart_" + state.me.restaurant_id;
 const loadCart = () => { try { return JSON.parse(localStorage.getItem(CART_KEY()) || "{}"); } catch { return {}; } };
 const saveCart = (c) => { try { localStorage.setItem(CART_KEY(), JSON.stringify(c)); } catch {} };
 
 let catalogCache = null;
+let dnCache = null;
+// The restaurant's own names for products (set by our team per restaurant); falls back to the real name.
+async function displayNames(force = false) {
+  if (!dnCache || force) {
+    try { dnCache = Object.fromEntries((await q(sb.rpc("boh_my_display_names"))).map((r) => [r.product_id, r.display_name])); }
+    catch { dnCache = {}; }
+  }
+  return dnCache;
+}
+async function withDN(rows) {
+  const m = await displayNames();
+  (rows || []).forEach((r) => { if (r && m[r.product_id]) r.product_name = m[r.product_id]; });
+  return rows;
+}
 async function myCatalog(force = false) {
-  if (!catalogCache || force) catalogCache = await q(sb.rpc("boh_my_catalog"));
+  if (!catalogCache || force) catalogCache = await withDN(await q(sb.rpc("boh_my_catalog")));
   return catalogCache;
 }
 
@@ -155,7 +169,7 @@ async function productDetail(p, cat, slide) {
   const pending = await q(sb.from("boh_product_requests").select("id").eq("product_id", p.id).eq("status", "pending"));
   const img = slide?.image_url || p.image_url;
   const m = modal({
-    title: p.name,
+    title: onList?.product_name || p.name,
     body: `${img ? `<img src="${esc(img)}" style="width:100%;max-height:300px;object-fit:cover;border-radius:10px;margin-bottom:1rem">` : ""}
       <div class="row">${p.brand ? `<span class="badge">${esc(p.brand)}</span>` : ""}<span class="badge">per ${esc(p.unit || "")}</span></div>
       <p>${esc(p.description || slide?.caption || "")}</p>
@@ -403,7 +417,7 @@ export async function myOrders(el) {
   $$("[data-pay]", el).forEach((b) => (b.onclick = () => payNow(orders.find((x) => x.id === b.dataset.pay), reload)));
   $$("[data-v]", el).forEach((b) => (b.onclick = async () => {
     const o = orders.find((x) => x.id === b.dataset.v);
-    const [lines, coords] = await Promise.all([q(sb.rpc("boh_order_lines", { p_order: o.id })), q(sb.rpc("boh_order_coordinators", { p_order: o.id })).then(uniqCoords)]);
+    const [lines, coords] = await Promise.all([q(sb.rpc("boh_order_lines", { p_order: o.id })).then(withDN), q(sb.rpc("boh_order_coordinators", { p_order: o.id })).then(uniqCoords)]);
     const m = modal({
       title: `Order #${o.order_no}`,
       body: `<div class="row" style="margin-bottom:1rem">${statusBadge(o.status)} ${payBadge(o)}<span class="muted">${PAY_MODE[o.payment_mode] || ""} · Delivery ${fmtD(o.delivery_date)}</span></div>
@@ -522,7 +536,7 @@ export async function stock(el) {
 }
 
 async function countTab(box, today) {
-  const rows = await q(sb.rpc("boh_stock_list", { p_date: today }));
+  const rows = await withDN(await q(sb.rpc("boh_stock_list", { p_date: today })));
   const cats = [...new Set(rows.map((r) => r.category_name))];
   box.innerHTML = `<div class="row" style="margin:.5rem 0"><input id="s" placeholder="Search…" style="max-width:280px"><span class="grow"></span>
       <button class="btn" id="copy">Fill with last count</button><button class="btn primary" id="save">Save count</button></div>
@@ -544,7 +558,7 @@ async function countTab(box, today) {
 }
 
 async function levelsTab(box) {
-  const rows = await q(sb.rpc("boh_stock_list"));
+  const rows = await withDN(await q(sb.rpc("boh_stock_list")));
   box.innerHTML = `<div class="notice">For each product: <b>Top up</b> → when stock ≤ reorder level, order enough to reach the target level. <b>Fixed qty</b> → order the same quantity every time.
     Before a category's delivery day off, the order automatically covers the extra day(s). Minimum order quantities (MOQ) are respected.</div>
     <div class="row" style="margin:.5rem 0"><span class="grow"></span><button class="btn primary" id="save">Save levels</button></div>
@@ -570,7 +584,7 @@ async function levelsTab(box) {
 async function autoTab(box) {
   const [cfg, prev] = await Promise.all([
     q(sb.from("boh_auto_order_config").select("*").eq("restaurant_id", state.me.restaurant_id).maybeSingle()),
-    q(sb.rpc("boh_auto_order_preview")),
+    q(sb.rpc("boh_auto_order_preview")).then(withDN),
   ]);
   const c = cfg || { enabled: false, order_time: "22:00", payment_mode: "cod" };
   const total = prev.reduce((a, r) => a + Number(r.line_total || 0), 0);

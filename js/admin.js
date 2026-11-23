@@ -2,8 +2,8 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox, orderAlloc, canDeliver,
-} from "./lib.js?v=19";
-import { DAYS, reviewVendor, vendorLogins, listingEditor } from "./growth.js?v=19";
+} from "./lib.js?v=20";
+import { DAYS, reviewVendor, vendorLogins, listingEditor } from "./growth.js?v=20";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -568,13 +568,18 @@ async function restaurantEditor(id, L, reload, startTab = 0) {
 
   async function listTab() {
     body.innerHTML = `<div class="empty">Loading…</div>`;
-    const rows = await q(sb.rpc("boh_restaurant_catalog", { p_restaurant: id }));
+    const [rows, dnRows] = await Promise.all([
+      q(sb.rpc("boh_restaurant_catalog", { p_restaurant: id })),
+      q(sb.from("boh_restaurant_products").select("id,display_name").eq("restaurant_id", id)),
+    ]);
+    const dn = Object.fromEntries(dnRows.map((d) => [d.id, d.display_name || ""]));
     body.innerHTML = `
-      <div class="row between" style="margin-bottom:.6rem"><div class="muted">${rows.length} products on this ordering list. Set a mark-up override <b>or</b> a fixed price; leave both blank to use the category mark-up. A fixed price wins over any mark-up.</div>
+      <div class="row between" style="margin-bottom:.6rem"><div class="muted">${rows.length} products on this ordering list. Set a mark-up override <b>or</b> a fixed price; leave both blank to use the category mark-up. A fixed price wins over any mark-up. <b>Display name</b>: what this restaurant sees instead of our product name (leave blank to show our name).</div>
         <input id="ls" placeholder="Filter…" style="max-width:240px"></div>
       <div class="table-wrap"><table><thead><tr><th>Product</th><th>Category</th><th class="right">Best cost</th><th>Vendor</th><th class="right">Mark-up override %</th><th class="right">Fixed price ₹</th><th class="right">Margin</th><th class="right">Selling price</th><th>On list</th><th></th></tr></thead><tbody>
-      ${rows.map((x) => `<tr data-n="${esc((x.product_name + " " + x.category_name).toLowerCase())}">
-        <td>${esc(x.product_name)} <span class="small muted">/${esc(x.unit)}</span></td><td>${esc(x.category_name)} ${x.category_active ? "" : `<span class="badge danger">category off — hidden from restaurant</span> <button class="btn sm" data-caton="${x.category_id}">Switch on</button>`}</td>
+      ${rows.map((x) => `<tr data-n="${esc((x.product_name + " " + (dn[x.rp_id] || "") + " " + x.category_name).toLowerCase())}">
+        <td>${esc(x.product_name)} <span class="small muted">/${esc(x.unit)}</span>
+          <div><input data-dn="${x.rp_id}" value="${esc(dn[x.rp_id] || "")}" placeholder="Display name for this restaurant" title="Shown to this restaurant instead of “${esc(x.product_name)}”" style="width:220px;margin-top:.25rem;font-size:.85em"></div></td><td>${esc(x.category_name)} ${x.category_active ? "" : `<span class="badge danger">category off — hidden from restaurant</span> <button class="btn sm" data-caton="${x.category_id}">Switch on</button>`}</td>
         <td class="right">${x.cost == null ? '<span class="badge danger">No rate</span>' : money(x.cost)}</td><td class="small">${esc(x.vendor_name || "")}</td>
         <td class="right"><input type="number" step="0.01" style="width:90px" data-ov="${x.rp_id}" value="${x.margin_override ?? ""}" placeholder="—" ${x.fixed_price != null ? 'disabled title="Click × Use mark-up to switch back"' : ""}></td>
         <td class="right" style="white-space:nowrap"><input type="number" step="0.01" min="0" style="width:100px" data-fp="${x.rp_id}" data-cost="${x.cost ?? ""}" value="${x.fixed_price ?? ""}" placeholder="—">
@@ -585,6 +590,11 @@ async function restaurantEditor(id, L, reload, startTab = 0) {
         <td><button class="btn sm danger" data-del="${x.rp_id}">Remove</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty">No products allocated yet — use “Add products”.</td></tr>`}
       </tbody></table></div>`;
     $("#ls", body).oninput = (e) => $$("tr[data-n]", body).forEach((tr) => tr.classList.toggle("hidden", !tr.dataset.n.includes(e.target.value.toLowerCase())));
+    $$("[data-dn]", body).forEach((i) => (i.onchange = async () => {
+      const v = i.value.trim();
+      await q(sb.from("boh_restaurant_products").update({ display_name: v || null }).eq("id", i.dataset.dn));
+      toast(v ? `This restaurant will see “${v}”` : "Display name cleared — our product name is shown");
+    }));
     $$("[data-ov]", body).forEach((i) => (i.onchange = async () => {
       await q(sb.from("boh_restaurant_products").update({ margin_override: i.value === "" ? null : Number(i.value) }).eq("id", i.dataset.ov));
       toast("Mark-up updated"); listTab();
