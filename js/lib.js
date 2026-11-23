@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=20";
+import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=21";
 
 export const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -282,3 +282,179 @@ export const OVERHEAD_KINDS = ["Porter", "Delivery charge", "Loading / unloading
 
 export const telLinks = (phones) =>
   (phones || []).filter(Boolean).map((p) => `<a href="tel:${esc(p)}">${esc(p)}</a>`).join(" ") || '<span class="muted">—</span>';
+
+// ====================================================================== guided order flow
+// the six stages every order goes through, in the words the team uses
+export const FLOW = ["Allocated", "Acknowledged", "Ordered with vendors", "Follow-ups", "Delivered", "Paid"];
+export const PAYMENT_METHODS = ["Cash", "UPI", "Bank transfer", "Cheque"];
+
+// where an order is and what has to happen next. A = orderAlloc(o)
+export function flowGuide(o, A = orderAlloc(o)) {
+  if (o.status === "cancelled") return { idx: -1, title: "Cancelled", help: "This order was cancelled.", done: true };
+  if (o.payment_status === "paid" && (o.status === "paid" || o.status === "delivered"))
+    return { idx: 6, title: "Completed", help: `Delivered and paid${o.payment_method ? " (" + o.payment_method + ")" : ""}. Nothing left to do.`, done: true };
+  if (o.status === "placed" || !A)
+    return { idx: 0, title: "Waiting for a coordinator", help: "An admin allocates the order to one coordinator (new orders are allocated automatically when a default coordinator is set in Settings).", who: "admin", action: { alloc: true, label: "Allocate" } };
+  const s = A.status;
+  if (s === "allocated") return { idx: 1, title: "Acknowledge the order", help: "Open the order, check the items and vendors, then tap Acknowledge so the admin and restaurant know you have it.", action: { step: "acknowledged", label: "Acknowledge" } };
+  if (s === "acknowledged") return { idx: 2, title: "Place the order with the vendors", help: "Call or WhatsApp each vendor listed below and order their items. Vendor not answering? Use ⇄ Change vendor. When every vendor has confirmed, tap Ordered with vendors.", action: { step: "vendor_ordered", label: "Mark ordered with vendors" } };
+  if (s === "vendor_ordered") return { idx: 3, title: "Follow up with the vendors", help: "Check the goods are on the way and note what the vendors said. If the goods have already reached the restaurant, tap Mark delivered.", action: { step: "followup1", label: "Log 1st follow-up" }, alt: { step: "delivered", label: "Mark delivered" } };
+  if (s === "followup1") return { idx: 3, title: "2nd follow-up", help: "Confirm the delivery time with the vendors and note it. Mark delivered as soon as the restaurant receives everything.", action: { step: "followup2", label: "Log 2nd follow-up" }, alt: { step: "delivered", label: "Mark delivered" } };
+  if (s === "followup2") return { idx: 4, title: "Mark delivered", help: "Once the restaurant has received all items, mark the order delivered and enter any porter / delivery charges you paid.", action: { step: "delivered", label: "Mark delivered" } };
+  // delivered, not paid
+  if (o.payment_status === "under_review") return { idx: 5, title: "Verify the payment", help: `The restaurant says it paid (ref ${o.payment_claim_ref || "—"}). Check your bank / UPI app, then approve or reject.`, action: { pay: "approve", label: "Approve payment" } };
+  return { idx: 5, title: "Collect the payment", help: "Collect the amount from the restaurant (cash, UPI, bank transfer or cheque) and record it here. The restaurant gets a payment receipt by email automatically.", action: { pay: "collect", label: "Collect payment" } };
+}
+
+// progress bar + "what to do now"
+export function flowHTML(o, A = orderAlloc(o), { compact = false } = {}) {
+  const g = flowGuide(o, A);
+  const bar = `<div class="flow">${FLOW.map((f, i) => `<div class="flow-step ${i < g.idx ? "done" : i === g.idx ? "now" : ""}"><span>${i < g.idx ? "✓" : i + 1}</span><em>${esc(f)}</em></div>`).join("")}</div>`;
+  if (compact) return bar;
+  return `${bar}<div class="flow-next ${g.done ? "done" : ""}"><b>${g.done ? "✓ " : "Next: "}${esc(g.title)}</b><div class="small">${esc(g.help)}</div></div>`;
+}
+
+// ====================================================================== bills / invoices
+const ONES = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"];
+const TENS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+const two = (x) => (x < 20 ? ONES[x] : TENS[Math.floor(x / 10)] + (x % 10 ? " " + ONES[x % 10] : ""));
+const three = (x) => (x >= 100 ? ONES[Math.floor(x / 100)] + " Hundred" + (x % 100 ? " " + two(x % 100) : "") : two(x));
+export function rupeesInWords(n) {
+  n = Math.round(Number(n || 0) * 100) / 100;
+  let r = Math.floor(n); const p = Math.round((n - r) * 100);
+  if (!r && !p) return "Zero Rupees Only";
+  const parts = [];
+  const cr = Math.floor(r / 1e7); r %= 1e7;
+  const lk = Math.floor(r / 1e5); r %= 1e5;
+  const th = Math.floor(r / 1e3); r %= 1e3;
+  if (cr) parts.push(three(cr) + " Crore");
+  if (lk) parts.push(two(lk) + " Lakh");
+  if (th) parts.push(two(th) + " Thousand");
+  if (r) parts.push(three(r));
+  return (parts.length ? "Rupees " + parts.join(" ") : "") + (p ? (parts.length ? " and " : "") + two(p) + " Paise" : "") + " Only";
+}
+
+export const billNo = (o) => o.invoice_no || `PI-${o.order_no}`;
+export const billTitle = (o) => (o.invoice_no ? "Invoice" : "Proforma invoice");
+
+// A4 bill. d = result of boh_invoice(); names = optional {product_id: display name} for the restaurant's own names
+export function invoiceHTML(d, names = {}) {
+  const o = d.order, r = d.restaurant || {}, c = d.company || {}, lines = d.lines || [];
+  const paid = o.payment_status === "paid";
+  const sub = lines.reduce((a, l) => a + Number(l.line_total || 0), 0);
+  const D = (x) => (x ? new Date(x).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" }) : "—");
+  const m = (x) => "₹" + Number(x || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const q3 = (x) => Number(x).toLocaleString("en-IN", { maximumFractionDigits: 3 });
+  const st = o.status === "cancelled" ? ["CANCELLED", "#b3261e"] : paid ? ["PAID", "#1b7f3b"] : o.invoice_no ? ["PAYMENT DUE", "#b26a00"] : null;
+  const bank = c.account_no ? `${esc(c.bank_name || "")} · A/c ${esc(c.account_no)}${c.ifsc ? " · IFSC " + esc(c.ifsc) : ""}${c.account_name ? "<br>A/c name: " + esc(c.account_name) : ""}${c.branch ? " · " + esc(c.branch) : ""}` : "";
+  return `<div class="inv" style="font-family:Inter,Segoe UI,Arial,sans-serif;color:#1f1d1a;background:#fff;width:760px;max-width:100%;margin:0 auto;padding:28px 30px;box-sizing:border-box;font-size:12.5px;line-height:1.45;position:relative">
+    ${st ? `<div style="position:absolute;top:120px;right:40px;transform:rotate(-12deg);border:3px solid ${st[1]};color:${st[1]};font-weight:800;font-size:22px;letter-spacing:2px;padding:4px 14px;border-radius:8px;opacity:.75">${st[0]}</div>` : ""}
+    <table style="width:100%;border-collapse:collapse"><tr>
+      <td style="vertical-align:top">
+        <div style="display:flex;align-items:center;gap:10px"><div style="width:38px;height:38px;border-radius:9px;background:#1f3a2e;color:#fff;font-weight:800;font-size:20px;display:flex;align-items:center;justify-content:center">B</div>
+          <div><div style="font-size:19px;font-weight:800">${esc(c.name || "Back of House Co")}</div><div style="color:#6b665e;font-size:11px">Restaurant supplies · procurement</div></div></div>
+        <div style="margin-top:8px;color:#4a463f;font-size:11.5px">${c.address ? esc(c.address).replace(/\n/g, "<br>") + "<br>" : ""}${[c.phone && "📞 " + esc(c.phone), c.email && "✉ " + esc(c.email)].filter(Boolean).join(" · ")}${c.gstin ? "<br>GSTIN: <b>" + esc(c.gstin) + "</b>" : ""}</div>
+      </td>
+      <td style="vertical-align:top;text-align:right">
+        <div style="font-size:22px;font-weight:800;color:#1f3a2e;text-transform:uppercase;letter-spacing:.5px">${o.status === "cancelled" ? "Cancelled bill" : billTitle(o)}</div>
+        <table style="margin-left:auto;margin-top:6px;font-size:12px;border-collapse:collapse">
+          <tr><td style="color:#6b665e;padding:1px 8px">${o.invoice_no ? "Invoice no." : "Proforma no."}</td><td style="font-weight:700">${esc(billNo(o))}</td></tr>
+          <tr><td style="color:#6b665e;padding:1px 8px">${o.invoice_no ? "Invoice date" : "Date"}</td><td>${D(o.invoice_date || o.created_at)}</td></tr>
+          <tr><td style="color:#6b665e;padding:1px 8px">Order no.</td><td>#${o.order_no}</td></tr>
+          <tr><td style="color:#6b665e;padding:1px 8px">Delivery</td><td>${o.delivered_at ? "Delivered " + D(o.delivered_at) : D(o.delivery_date)}</td></tr>
+        </table>
+      </td></tr></table>
+    <div style="height:2px;background:#1f3a2e;margin:14px 0 12px"></div>
+    <table style="width:100%;border-collapse:collapse"><tr>
+      <td style="vertical-align:top;width:58%"><div style="color:#6b665e;font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;font-weight:700">Bill to</div>
+        <div style="font-size:14px;font-weight:700;margin-top:2px">${esc(r.name || "")}</div>
+        <div style="color:#4a463f;font-size:11.5px">${r.contact ? esc(r.contact) + "<br>" : ""}${r.address ? esc(r.address).replace(/\n/g, "<br>") + "<br>" : ""}${[r.phone && "📞 " + esc(r.phone), r.email && "✉ " + esc(r.email)].filter(Boolean).join(" · ")}${r.gstin ? "<br>GSTIN: <b>" + esc(r.gstin) + "</b>" : ""}</div></td>
+      <td style="vertical-align:top"><div style="color:#6b665e;font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;font-weight:700">Payment</div>
+        <div style="margin-top:2px">${o.payment_mode === "prepaid" ? "Pre-pay" : "Pay on delivery"}</div>
+        <div>${paid ? `<b style="color:#1b7f3b">Paid ${D(o.paid_at)}</b>${o.payment_method ? " · " + esc(o.payment_method) : ""}${o.payment_ref && o.payment_ref !== o.payment_method ? "<br>Ref: " + esc(o.payment_ref) : ""}` : o.status === "cancelled" ? "—" : `<b style="color:#b26a00">Amount due ${m(o.total)}</b>`}</div>
+        ${d.coordinator?.name ? `<div style="margin-top:4px;color:#4a463f;font-size:11.5px">Coordinator: ${esc(d.coordinator.name)}${d.coordinator.phone ? " · " + esc(d.coordinator.phone) : ""}</div>` : ""}</td>
+    </tr></table>
+    <table style="width:100%;border-collapse:collapse;margin-top:14px;font-size:12px">
+      <thead><tr style="background:#1f3a2e;color:#fff">
+        <th style="padding:7px 6px;text-align:left;width:26px">#</th><th style="padding:7px 6px;text-align:left">Item</th>
+        <th style="padding:7px 6px;text-align:right">Qty</th><th style="padding:7px 6px;text-align:left">Unit</th>
+        <th style="padding:7px 6px;text-align:right">Rate</th><th style="padding:7px 6px;text-align:right">Amount</th></tr></thead>
+      <tbody>${lines.map((l, i) => `<tr style="background:${i % 2 ? "#faf8f4" : "#fff"};page-break-inside:avoid">
+        <td style="padding:6px;border-bottom:1px solid #eee8de;color:#6b665e">${i + 1}</td>
+        <td style="padding:6px;border-bottom:1px solid #eee8de"><b style="font-weight:600">${esc(names[l.product_id] || l.product_name)}</b>${l.category_name ? `<div style="color:#8a847a;font-size:10.5px">${esc(l.category_name)}</div>` : ""}</td>
+        <td style="padding:6px;border-bottom:1px solid #eee8de;text-align:right">${q3(l.qty)}</td>
+        <td style="padding:6px;border-bottom:1px solid #eee8de">${esc(l.unit || "")}</td>
+        <td style="padding:6px;border-bottom:1px solid #eee8de;text-align:right">${m(l.unit_price)}</td>
+        <td style="padding:6px;border-bottom:1px solid #eee8de;text-align:right;font-weight:600">${m(l.line_total)}</td></tr>`).join("")}</tbody></table>
+    <table style="width:100%;border-collapse:collapse;margin-top:10px;page-break-inside:avoid"><tr>
+      <td style="vertical-align:top;padding-right:16px;color:#4a463f;font-size:11.5px"><b>Amount in words</b><br>${rupeesInWords(o.total)}</td>
+      <td style="vertical-align:top;width:250px"><table style="width:100%;border-collapse:collapse;font-size:12.5px">
+        <tr><td style="padding:3px 6px;color:#6b665e">Items</td><td style="padding:3px 6px;text-align:right">${lines.length}</td></tr>
+        <tr><td style="padding:3px 6px;color:#6b665e">Subtotal</td><td style="padding:3px 6px;text-align:right">${m(sub)}</td></tr>
+        <tr style="background:#1f3a2e;color:#fff;font-size:14px"><td style="padding:7px 6px;font-weight:700">Total</td><td style="padding:7px 6px;text-align:right;font-weight:800">${m(o.total)}</td></tr>
+        ${paid ? `<tr><td style="padding:4px 6px;color:#1b7f3b">Paid</td><td style="padding:4px 6px;text-align:right;color:#1b7f3b">− ${m(o.total)}</td></tr><tr><td style="padding:3px 6px;font-weight:700">Balance</td><td style="padding:3px 6px;text-align:right;font-weight:700">${m(0)}</td></tr>` : ""}
+      </table></td></tr></table>
+    ${!paid && o.status !== "cancelled" && (c.upi || bank || c.qr) ? `<div style="margin-top:14px;border:1px solid #e6e0d6;border-radius:8px;padding:10px 12px;display:flex;gap:14px;align-items:center;page-break-inside:avoid">
+      ${c.qr ? `<img src="${esc(c.qr)}" crossorigin="anonymous" style="width:92px;height:92px;object-fit:contain">` : ""}
+      <div style="font-size:11.5px"><b>How to pay</b><br>${c.upi ? "UPI: <b>" + esc(c.upi) + "</b><br>" : ""}${bank ? "Bank: " + bank : ""}<br><span style="color:#6b665e">Please mention order #${o.order_no} in the payment note.</span></div></div>` : ""}
+    ${o.notes ? `<div style="margin-top:10px;font-size:11.5px;color:#4a463f"><b>Note:</b> ${esc(o.notes)}</div>` : ""}
+    <div style="margin-top:18px;padding-top:8px;border-top:1px solid #e6e0d6;display:flex;justify-content:space-between;gap:20px;font-size:10.5px;color:#6b665e;page-break-inside:avoid">
+      <div>${esc(c.terms || "")}</div><div style="text-align:right;white-space:nowrap">For <b>${esc(c.name || "")}</b><br><br>Authorised signatory</div></div>
+  </div>`;
+}
+
+let h2pLoader = null;
+function loadPdfLib() {
+  if (window.html2pdf) return Promise.resolve(window.html2pdf);
+  return (h2pLoader ||= new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.2/dist/html2pdf.bundle.min.js";
+    s.onload = () => res(window.html2pdf);
+    s.onerror = () => { h2pLoader = null; rej(new Error("Could not load the PDF tool — use Print → Save as PDF instead")); };
+    document.head.appendChild(s);
+  }));
+}
+export async function downloadBillPDF(node, filename) {
+  const h2p = await loadPdfLib();
+  await h2p().set({
+    margin: [8, 6, 10, 6], filename,
+    image: { type: "jpeg", quality: 0.97 },
+    html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+    jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+    pagebreak: { mode: ["css", "legacy"], avoid: "tr" },
+  }).from(node).save();
+}
+export function printBill(html, title) {
+  const w = window.open("", "_blank");
+  if (!w) return toast("Allow pop-ups to print", true);
+  w.document.write(`<!doctype html><html><head><title>${esc(title)}</title><style>@page{size:A4;margin:10mm}body{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}</style></head><body>${html}<script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`);
+  w.document.close();
+}
+
+// open a bill in a modal with Download PDF / Print (and Email to restaurant for the team)
+export async function openBill(orderId, { names = {}, team = false } = {}) {
+  const d = await q(sb.rpc("boh_invoice", { p_order: orderId }));
+  const o = d.order;
+  const html = invoiceHTML(d, names);
+  const file = `${billTitle(o).replace(/\s+/g, "-")}-${billNo(o).replace(/[^\w-]+/g, "-")}-${(d.restaurant?.name || "").replace(/[^\w]+/g, "-")}.pdf`;
+  const m = modal({
+    wide: true,
+    title: `${billTitle(o)} ${billNo(o)} — ${d.restaurant?.name || ""}`,
+    body: `<div style="background:#efece6;padding:12px;border-radius:10px;overflow:auto"><div id="billdoc" style="box-shadow:0 2px 12px rgba(0,0,0,.12);background:#fff;width:760px;max-width:none;margin:0 auto">${html}</div></div>
+      ${o.invoice_no ? "" : '<p class="small muted" style="margin-top:.5rem">This is a proforma (estimate) — it becomes an invoice with its own number once the order is delivered or paid.</p>'}`,
+    footer: `${team ? '<button class="btn" id="bmail">✉ Email to restaurant</button>' : ""}<span class="grow"></span>
+      <button class="btn" id="bprint">🖨 Print</button><button class="btn primary" id="bpdf">⬇ Download PDF</button>`,
+  });
+  $("#bpdf", m.el).onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = "Preparing…";
+    try { await downloadBillPDF($("#billdoc .inv", m.el), file); }
+    catch (err) { toast(err.message || "PDF failed — use Print", true); }
+    finally { e.target.disabled = false; e.target.textContent = "⬇ Download PDF"; }
+  };
+  $("#bprint", m.el).onclick = () => printBill(html, `${billTitle(o)} ${billNo(o)}`);
+  $("#bmail", m.el)?.addEventListener("click", async () => {
+    await q(sb.rpc("boh_resend_bill", { p_order: orderId }));
+    toast("Bill sent to the restaurant's email / WhatsApp");
+  });
+  return m;
+}

@@ -173,3 +173,24 @@ a.btn { text-decoration: none; }
 .dayoff { display: inline-flex; align-items: center; gap: 2px; font-size: .72rem; padding: .15rem .3rem; margin-right: 2px; border: 1px solid #e3ddd2; border-radius: 6px; cursor: pointer; font-weight: 500; }
 .dayoff input { width: auto; margin: 0; }
 .dayoff.on { background: #fde8e4; border-color: #e8b4a8; color: #a23b26; }
+
+/* guided order flow */
+.flow { display: flex; gap: 4px; margin: .4rem 0 .5rem; }
+.flow-step { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; position: relative; min-width: 0; }
+.flow-step::before { content: ""; position: absolute; top: 11px; left: -50%; right: 50%; height: 3px; background: var(--line, #e6e0d6); z-index: 0; }
+.flow-step:first-child::before { display: none; }
+.flow-step span { width: 24px; height: 24px; border-radius: 50%; background: #fff; border: 2px solid var(--line, #e6e0d6); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #8a847a; z-index: 1; }
+.flow-step em { font-style: normal; font-size: 10.5px; color: #8a847a; text-align: center; line-height: 1.15; }
+.flow-step.done span { background: var(--ok, #1b7f3b); border-color: var(--ok, #1b7f3b); color: #fff; }
+.flow-step.done::before, .flow-step.now::before { background: var(--ok, #1b7f3b); }
+.flow-step.now span { border-color: var(--accent, #c2410c); color: var(--accent, #c2410c); box-shadow: 0 0 0 3px rgba(194, 65, 12, .15); }
+.flow-step.now em { color: var(--ink, #1f1d1a); font-weight: 700; }
+.flow-next { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 10px; padding: .55rem .75rem; margin-bottom: .6rem; }
+.flow-next.done { background: #ecfdf3; border-color: #bbf7d0; }
+.pipe { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; }
+.pipe button { background: #fff; border: 1px solid var(--line, #e6e0d6); border-radius: 10px; padding: .45rem .75rem; cursor: pointer; text-align: left; font: inherit; }
+.pipe button b { display: block; font-size: 1.25rem; }
+.pipe button.on { border-color: var(--accent, #c2410c); box-shadow: 0 0 0 2px rgba(194, 65, 12, .15); }
+.pipe button small { color: #6b665e; }
+.bill-lines td input { width: 90px; }
+@media (max-width: 640px) { .flow-step em { font-size: 9px; } }

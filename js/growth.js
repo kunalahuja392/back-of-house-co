@@ -1,7 +1,7 @@
 // Back of House Co — shop, website leads, vendor offers, vendor approvals and feature access (staff side)
 import {
   sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, promptBox, q, uploadImage, downloadCSV, tabs, telLinks, callUsersFn,
-} from "./lib.js?v=20";
+} from "./lib.js?v=21";
 
 const isSuper = () => state.me.role === "super_admin";
 const FEATURE_LABEL = { auto_order: "Stock & auto-order", vendor_orders: "Vendor portal — orders", vendor_products: "Vendor portal — sell products" };

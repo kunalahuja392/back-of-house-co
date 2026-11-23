@@ -1,4 +1,4 @@
-import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, promptBox, q, statusBadge, telLinks, payBadge, PAY_MODE, todayIST, tabs } from "./lib.js?v=20";
+import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, promptBox, q, statusBadge, telLinks, payBadge, PAY_MODE, todayIST, tabs, openBill, billNo } from "./lib.js?v=21";
 
 const CART_KEY = () => "boh_cart_" + state.me.restaurant_id;
 const loadCart = () => { try { return JSON.parse(localStorage.getItem(CART_KEY()) || "{}"); } catch { return {}; } };
@@ -408,13 +408,15 @@ export async function myOrders(el) {
     <div class="page-head"><h1>My orders</h1><a class="btn primary" href="#/order">+ New order</a></div>
     ${unpaidBanner(orders)}
     <div style="max-width:520px;margin-bottom:1rem">${bal}</div>
-    <div class="table-wrap"><table><thead><tr><th>#</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Order status</th><th>Payment</th><th></th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th>#</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Order status</th><th>Payment</th><th>Bill</th><th></th></tr></thead><tbody>
     ${orders.map((o) => `<tr><td><b>${o.order_no}</b></td><td>${fmtDT(o.created_at)}</td><td>${fmtD(o.delivery_date)}</td><td class="right">${money(o.total)}</td><td>${statusBadge(o.status)}</td>
       <td>${payBadge(o)}<div class="small muted">${PAY_MODE[o.payment_mode] || ""}</div>${o.payment_status === "unpaid" && o.payment_rejected_note ? `<div class="small" style="color:var(--danger)">${esc(o.payment_rejected_note)}</div>` : ""}</td>
-      <td class="right" style="white-space:nowrap">${o.status !== "cancelled" && o.payment_status === "unpaid" ? `<button class="btn sm accent" data-pay="${o.id}">Pay now</button> ` : ""}<button class="btn sm" data-v="${o.id}">View</button></td></tr>`).join("") || '<tr><td colspan="7" class="empty">No orders yet.</td></tr>'}
+      <td>${o.status !== "cancelled" ? `<button class="btn sm" data-bill="${o.id}" title="${o.invoice_no ? "Invoice" : "Proforma invoice"}">🧾 ${esc(billNo(o))}</button>` : ""}</td>
+      <td class="right" style="white-space:nowrap">${o.status !== "cancelled" && o.payment_status === "unpaid" ? `<button class="btn sm accent" data-pay="${o.id}">Pay now</button> ` : ""}<button class="btn sm" data-v="${o.id}">View</button></td></tr>`).join("") || '<tr><td colspan="8" class="empty">No orders yet.</td></tr>'}
     </tbody></table></div>`;
   const reload = () => myOrders(el);
   $$("[data-pay]", el).forEach((b) => (b.onclick = () => payNow(orders.find((x) => x.id === b.dataset.pay), reload)));
+  $$("[data-bill]", el).forEach((b) => (b.onclick = async () => openBill(b.dataset.bill, { names: await displayNames() })));
   $$("[data-v]", el).forEach((b) => (b.onclick = async () => {
     const o = orders.find((x) => x.id === b.dataset.v);
     const [lines, coords] = await Promise.all([q(sb.rpc("boh_order_lines", { p_order: o.id })).then(withDN), q(sb.rpc("boh_order_coordinators", { p_order: o.id })).then(uniqCoords)]);
@@ -429,8 +431,9 @@ export async function myOrders(el) {
         ${lines.map((l) => `<tr><td>${esc(l.product_name)}</td><td class="right">${num(l.qty, 3)} ${esc(l.unit)}</td><td class="right">${money(l.unit_price)}</td><td class="right">${money(l.line_total)}</td></tr>`).join("")}
         <tr><td colspan="3"><b>Total</b></td><td class="right"><b>${money(o.total)}</b></td></tr></tbody></table>
         ${o.notes ? `<p class="small muted">Your note: ${esc(o.notes)}</p>` : ""}`,
-      footer: `<button class="btn" id="cmp">Raise a complaint</button>${o.status !== "cancelled" && o.payment_status === "unpaid" ? '<button class="btn accent" id="paynow">Pay now</button>' : ""}`,
+      footer: `<button class="btn" id="cmp">Raise a complaint</button><span class="grow"></span>${o.status !== "cancelled" ? `<button class="btn" id="mbill">🧾 ${o.invoice_no ? "Invoice" : "Proforma bill"} (PDF)</button>` : ""}${o.status !== "cancelled" && o.payment_status === "unpaid" ? '<button class="btn accent" id="paynow">Pay now</button>' : ""}`,
     });
+    $("#mbill", m.el)?.addEventListener("click", async () => openBill(o.id, { names: await displayNames() }));
     $("#cmp", m.el).onclick = () => { m.close(); complaintForm(o.id, () => (location.hash = "#/complaints")); };
     $("#paynow", m.el)?.addEventListener("click", () => { m.close(); payNow(o, reload); });
   }));

@@ -2,8 +2,9 @@ import {
   sb, state, $, $$, esc, money, num, pct, fmtDT, fmtD, toast, modal, confirmBox, formData, q, callUsersFn,
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox, orderAlloc, canDeliver,
-} from "./lib.js?v=20";
-import { DAYS, reviewVendor, vendorLogins, listingEditor } from "./growth.js?v=20";
+  flowGuide, flowHTML, openBill, billNo, billTitle, PAYMENT_METHODS,
+} from "./lib.js?v=21";
+import { DAYS, reviewVendor, vendorLogins, listingEditor } from "./growth.js?v=21";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -105,19 +106,21 @@ function coordNames(o, L) {
 
 function orderTable(rows, L) {
   if (!rows.length) return `<div class="empty">No orders here.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>#</th><th>Restaurant</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Status</th><th>Payment</th><th>Coordinator</th><th>SLA</th><th></th></tr></thead><tbody>
+  return `<div class="table-wrap"><table><thead><tr><th>#</th><th>Restaurant</th><th>Placed</th><th>Delivery</th><th class="right">Total</th><th>Where it is</th><th>Next step</th><th>Payment</th><th>Coordinator</th><th>SLA</th><th></th></tr></thead><tbody>
     ${rows.map((o) => `<tr>
       <td><b>${o.order_no}</b></td>
       <td>${esc(L.restMap[o.restaurant_id]?.name || "—")}</td>
       <td>${fmtDT(o.created_at)}</td>
       <td>${fmtD(o.delivery_date)}</td>
       <td class="right">${money(o.total)}</td>
-      <td>${statusBadge(o.status)}</td>
+      <td>${statusBadge(o.status)}${o.source === "backend" ? ' <span class="badge">bill</span>' : ""}</td>
+      <td class="small" style="max-width:190px">${esc(flowGuide(o).title)}</td>
       <td>${payBadge(o)}<div class="small muted">${PAY_MODE[o.payment_mode] || ""}</div></td>
       <td>${coordNames(o, L)}</td>
       <td>${dueBadge(o)}</td>
       <td class="right" style="white-space:nowrap">
         ${isStaff() && !["delivered", "paid", "cancelled"].includes(o.status) ? `<button class="btn sm" data-alloc="${o.id}">${o.status === "placed" ? "Allocate" : "Reassign"}</button>` : ""}
+        <button class="btn sm" data-bill="${o.id}" title="${o.invoice_no ? "Invoice " + esc(o.invoice_no) : "Proforma invoice"}">🧾</button>
         <button class="btn sm" data-view="${o.id}">Open</button></td>
     </tr>`).join("")}</tbody></table></div>`;
 }
@@ -125,6 +128,7 @@ function orderTable(rows, L) {
 function bindOrderTable(el, L, reload) {
   $$("[data-alloc]", el).forEach((b) => (b.onclick = () => allocateModal(b.dataset.alloc, L, reload)));
   $$("[data-view]", el).forEach((b) => (b.onclick = () => orderModal(b.dataset.view, reload)));
+  $$("[data-bill]", el).forEach((b) => (b.onclick = () => openBill(b.dataset.bill, { team: true })));
 }
 
 // one coordinator handles the whole order
@@ -167,18 +171,42 @@ export async function paymentAction(o, action, done) {
     await q(sb.rpc("boh_reject_payment", { p_order: o.id, p_note: note }));
     toast("Payment rejected — restaurant will see it as Not paid");
   } else {
-    const ref = await promptBox("Payment collected", "Payment reference (UPI / cheque / cash)");
-    if (ref === null) return;
-    await q(sb.rpc("boh_mark_paid", { p_order: o.id, p_ref: ref || "Collected" }));
-    toast("Payment recorded");
+    if (!(await collectPayment(o))) return;
   }
   refreshCounts(); done?.();
+}
+
+// coordinator / admin records a payment they collected; the restaurant gets a receipt automatically
+export function collectPayment(o) {
+  return new Promise((res) => {
+    const m = modal({
+      title: `Collect payment — order #${o.order_no}`,
+      body: `<div class="row between" style="margin-bottom:.75rem"><span class="muted">${esc(o.restaurant?.name || "")}</span><b style="font-size:1.4rem">${money(o.total)}</b></div>
+        ${o.status !== "delivered" && o.status !== "paid" ? '<div class="notice">This order is not marked delivered yet. You can still record a pre-payment.</div>' : ""}
+        <div class="field"><label>How did the restaurant pay?</label>
+          <div class="row" style="gap:.4rem">${PAYMENT_METHODS.map((pm, i) => `<label class="row" style="gap:.3rem;margin:0;font-weight:400;border:1px solid var(--line);border-radius:8px;padding:.35rem .6rem"><input type="radio" name="pm" value="${pm}" ${i === 0 ? "checked" : ""}> ${pm}</label>`).join("")}</div></div>
+        <div class="field" id="reff"><label>Reference <span class="muted small" id="refhint">(optional for cash)</span></label><input id="ref" placeholder="UPI UTR / transaction id / cheque no."></div>
+        <p class="small muted">The restaurant gets a payment receipt by email / WhatsApp, and the bill shows PAID.</p>`,
+      footer: `<button class="btn" id="cx">Cancel</button><button class="btn primary" id="ok">Record ${money(o.total)} received</button>`,
+    });
+    const sync = () => { const cash = $("input[name=pm]:checked", m.el).value === "Cash"; $("#refhint", m.el).textContent = cash ? "(optional for cash)" : "(required)"; };
+    $$("input[name=pm]", m.el).forEach((r) => (r.onchange = sync));
+    $("#cx", m.el).onclick = () => { m.close(); res(false); };
+    m.el.querySelector(".x").onclick = () => { m.close(); res(false); };
+    $("#ok", m.el).onclick = async () => {
+      const method = $("input[name=pm]:checked", m.el).value, ref = $("#ref", m.el).value.trim();
+      if (method !== "Cash" && !ref) return toast("Enter the reference so we can match it in the bank statement", true);
+      try { await q(sb.rpc("boh_collect_payment", { p_order: o.id, p_method: method, p_ref: ref || null })); }
+      catch { return; }
+      toast(`Payment recorded — ${method}. Receipt sent to the restaurant.`); m.close(); res(true);
+    };
+  });
 }
 export function paymentButtons(o) {
   if (o.status === "cancelled" || o.payment_status === "paid") return "";
   if (o.payment_status === "under_review")
     return `<button class="btn sm danger" data-payact="reject" data-oid="${o.id}">Reject</button> <button class="btn sm primary" data-payact="approve" data-oid="${o.id}">Approve payment</button>`;
-  return `<button class="btn sm" data-payact="collect" data-oid="${o.id}">Mark payment collected</button>`;
+  return `<button class="btn sm ${o.status === "delivered" ? "primary" : ""}" data-payact="collect" data-oid="${o.id}">💰 Collect payment</button>`;
 }
 export function bindPaymentButtons(root, list, done) {
   $$("[data-payact]", root).forEach((b) => (b.onclick = () => paymentAction(list.find((o) => o.id === b.dataset.oid), b.dataset.payact, done)));
@@ -327,8 +355,13 @@ export async function orderModal(orderId, reload) {
     wide: true,
     title: `Order #${o.order_no} — ${o.restaurant?.name || ""}`,
     body: `
-      <div class="row" style="margin-bottom:1rem">${statusBadge(o.status)} ${dueBadge(o)}
-        <span class="muted">Placed ${fmtDT(o.created_at)} · Delivery ${fmtD(o.delivery_date)} · ${esc(o.restaurant?.phone || "")} · ${esc(o.restaurant?.address || "")}</span></div>
+      <div class="row" style="margin-bottom:.5rem">${statusBadge(o.status)} ${dueBadge(o)}
+        <span class="muted">Placed ${fmtDT(o.created_at)}${o.source === "backend" ? " (bill created by team)" : ""} · Delivery ${fmtD(o.delivery_date)} · ${esc(o.restaurant?.phone || "")} · ${esc(o.restaurant?.address || "")}</span></div>
+      ${flowHTML(o, A)}
+      ${(() => { const g = flowGuide(o, A); if (g.done || !(staff || onOrder)) return "";
+        if (g.action?.alloc) return staff ? '<div class="row" style="justify-content:flex-end;margin:-.2rem 0 .8rem"><button class="btn primary" id="galloc">Allocate now</button></div>' : "";
+        if (g.action?.pay) return `<div class="row" style="justify-content:flex-end;margin:-.2rem 0 .8rem">${paymentButtons(o)}</div>`;
+        return `<div class="row" style="justify-content:flex-end;margin:-.2rem 0 .8rem">${g.alt ? `<button class="btn" data-oadv="${g.alt.step}">${g.alt.label}</button>` : ""}<button class="btn primary" data-oadv="${g.action.step}">${g.action.label}</button></div>`; })()}
       ${o.notes ? `<div class="notice">Restaurant note: ${esc(o.notes)}</div>` : ""}
       <div class="grid c2" style="align-items:start">
         <div>
@@ -337,9 +370,6 @@ export async function orderModal(orderId, reload) {
             <div class="row">${A ? statusBadge(A.status) : ""}</div></div>
             ${A ? `<details style="margin-top:.5rem"><summary class="small">Coordinator timeline</summary>${stepsHTML(allocSteps(o, A))}
               ${A.followup1_note ? `<p class="small"><b>1st follow-up:</b> ${esc(A.followup1_note)}</p>` : ""}${A.followup2_note ? `<p class="small"><b>2nd follow-up:</b> ${esc(A.followup2_note)}</p>` : ""}</details>` : ""}
-            ${can && A && o.status !== "placed" ? `<div class="row" style="justify-content:flex-end;margin-top:.5rem">
-              ${canDeliver(A.status) && next !== "delivered" ? `<button class="btn sm" data-oadv="delivered">Mark delivered</button>` : ""}
-              ${next ? `<button class="btn sm primary" data-oadv="${next}">${STEP_BUTTON[next]}</button>` : ""}</div>` : ""}
           </div>
           <h3 style="margin:.4rem 0">Vendors — whom to order from</h3>
           ${Object.values(byVendor).map(vendorSection).join("")}
@@ -366,6 +396,7 @@ export async function orderModal(orderId, reload) {
       </div>`,
     footer: `${staff && !["paid", "cancelled"].includes(o.status) ? `<button class="btn danger" id="cancel">Cancel order</button>` : ""}
       <span class="grow"></span>
+      <button class="btn" id="obill">🧾 ${o.invoice_no ? "Invoice " + esc(o.invoice_no) : "Proforma bill"}</button>
       ${staff && !["delivered", "paid", "cancelled"].includes(o.status) ? `<button class="btn" id="realloc">${o.status === "placed" ? "Allocate" : "Reassign"}</button>` : ""}
 `,
   });
@@ -380,6 +411,8 @@ export async function orderModal(orderId, reload) {
   });
   bindPaymentButtons(m.el, [o], reopen);
   $("#realloc", m.el)?.addEventListener("click", async () => { m.close(); allocateModal(orderId, await lookups(), reload); });
+  $("#galloc", m.el)?.addEventListener("click", async () => { m.close(); allocateModal(orderId, await lookups(), reload); });
+  $("#obill", m.el).onclick = () => openBill(orderId, { team: true });
   $("#cancel", m.el)?.addEventListener("click", async () => {
     if (!(await confirmBox(`Cancel order #${o.order_no}?`))) return;
     await q(sb.rpc("boh_cancel_order", { p_order: orderId }));
@@ -392,7 +425,9 @@ export async function orders(el) {
   const mine = await q(sb.from("boh_restaurant_admins").select("restaurant_id").eq("user_id", state.me.id));
   const mySet = new Set(mine.map((x) => x.restaurant_id));
   el.innerHTML = `
-    <div class="page-head"><div><h1>Orders & allocation</h1><div class="muted">Allocate each order to one coordinator within ${state.settings.sla_allocate_hrs} working hours.</div></div></div>
+    <div class="page-head"><div><h1>Orders & allocation</h1><div class="muted">${state.settings.default_coordinator_id ? `New orders go automatically to <b>${esc(L.teamMap[state.settings.default_coordinator_id]?.full_name || "the default coordinator")}</b> (change in Settings). Use Reassign to give one to someone else.` : `Allocate each order to one coordinator within ${state.settings.sla_allocate_hrs} working hours.`}</div></div>
+      <a class="btn primary" href="#/billing?new=1">+ New bill</a></div>
+    <div class="pipe" id="pipe"></div>
     <div class="card"><div class="row">
       <div><label>Status</label><select id="fs"><option value="open">Open (not paid)</option><option value="placed">Awaiting allocation</option><option value="">All</option>
         ${["allocated", "acknowledged", "vendor_ordered", "followup1", "followup2", "delivered", "paid", "cancelled"].map((s) => `<option value="${s}">${s}</option>`).join("")}</select></div>
@@ -413,9 +448,17 @@ export async function orders(el) {
     if (r === "__mine") qq = qq.in("restaurant_id", [...mySet]); else if (r) qq = qq.eq("restaurant_id", r);
     let rows = await q(qq);
     if ($("#fc").value) rows = rows.filter((o) => o.coordinator_id === $("#fc").value || (o.allocs || []).some((a) => a.coordinator_id === $("#fc").value));
+    // pipeline: how many orders sit at each stage (click to filter)
+    const stage = (o) => { const g = flowGuide(o); return g.done ? (o.status === "cancelled" ? "x" : "done") : g.action?.alloc ? "alloc" : g.idx <= 1 ? "ack" : g.idx <= 4 ? "vendor" : g.action?.pay === "approve" ? "verify" : "pay"; };
+    const ST = [["alloc", "Waiting for coordinator"], ["ack", "To acknowledge"], ["vendor", "With vendors / delivering"], ["pay", "Delivered — collect payment"], ["verify", "Payment to verify"], ["done", "Completed"]];
+    const cnt = Object.fromEntries(ST.map(([k]) => [k, rows.filter((o) => stage(o) === k).length]));
+    $("#pipe").innerHTML = ST.map(([k, l]) => `<button data-stage="${k}" class="${pick === k ? "on" : ""}"><b>${cnt[k]}</b><small>${l}</small></button>`).join("") + (pick ? '<button data-stage=""><small>Show all</small></button>' : "");
+    $$("[data-stage]", $("#pipe")).forEach((b) => (b.onclick = () => { pick = b.dataset.stage; load(); }));
+    if (pick) rows = rows.filter((o) => stage(o) === pick);
     $("#list").innerHTML = orderTable(rows, L);
     bindOrderTable($("#list"), L, load);
   };
+  let pick = "";
   $$("select, input", el).forEach((i) => (i.onchange = load));
   load();
 }
@@ -1401,6 +1444,7 @@ export async function settings(el) {
     const row = await q(sb.from("boh_settings").update(f).eq("id", 1).select().single());
     state.settings = row; toast("Settings saved");
   };
+  await billingSettings(el);
   notificationSettings(el);
 }
 
@@ -1609,4 +1653,181 @@ export async function notifications(el) {
     load();
   };
   load();
+}
+
+// ====================================================================== BILLING (admins and coordinators)
+export async function billing(el) {
+  const team = ["admin", "super_admin", "coordinator"].includes(state.me.role);
+  const rests = await q(sb.from("boh_restaurants").select("id,name,active").order("name"));
+  const restMap = Object.fromEntries(rests.map((r) => [r.id, r]));
+  el.innerHTML = `
+    <div class="page-head"><div><h1>Billing</h1>
+      <div class="muted">Every order has a bill. Before delivery it is a <b>proforma invoice</b>; once delivered or paid it gets an <b>invoice number</b>. Create a bill here for anything sold outside the app.</div></div>
+      <button class="btn primary" id="nb">+ New bill</button></div>
+    <div class="card"><div class="row">
+      <div><label>Restaurant</label><select id="fr"><option value="">All</option>${rests.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("")}</select></div>
+      <div><label>Payment</label><select id="fp"><option value="">All</option><option value="due">Unpaid / due</option><option value="under_review">To verify</option><option value="paid">Paid</option></select></div>
+      <div><label>Type</label><select id="ft"><option value="">All bills</option><option value="inv">Invoices only</option><option value="pi">Proforma only</option><option value="backend">Created from backend</option></select></div>
+      <div><label>From</label><input type="date" id="ff" value="${daysAgoIST(30)}"></div>
+      <div><label>To</label><input type="date" id="fto" value="${todayIST()}"></div>
+      <div style="align-self:flex-end"><button class="btn" id="csv">⬇ Export CSV</button></div>
+    </div></div>
+    <div id="sum" class="pipe"></div>
+    <div id="list"></div>`;
+  let rows = [];
+  const load = async () => {
+    let qq = sb.from("boh_orders").select("*, restaurant:boh_restaurants(name,phone)").neq("status", "cancelled").order("created_at", { ascending: false })
+      .gte("created_at", $("#ff").value + "T00:00:00+05:30").lte("created_at", $("#fto").value + "T23:59:59+05:30");
+    if ($("#fr").value) qq = qq.eq("restaurant_id", $("#fr").value);
+    const fp = $("#fp").value;
+    if (fp === "due") qq = qq.eq("payment_status", "unpaid"); else if (fp) qq = qq.eq("payment_status", fp);
+    const ft = $("#ft").value;
+    if (ft === "inv") qq = qq.not("invoice_no", "is", null); else if (ft === "pi") qq = qq.is("invoice_no", null); else if (ft === "backend") qq = qq.eq("source", "backend");
+    rows = await q(qq);
+    const sum = (f) => rows.filter(f).reduce((a, o) => a + Number(o.total), 0);
+    $("#sum").innerHTML = `<button disabled><b>${money(sum(() => true))}</b><small>${rows.length} bills</small></button>
+      <button disabled><b>${money(sum((o) => o.payment_status === "paid"))}</b><small>Paid</small></button>
+      <button disabled><b>${money(sum((o) => o.payment_status === "under_review"))}</b><small>To verify</small></button>
+      <button disabled><b>${money(sum((o) => o.payment_status === "unpaid" && (o.delivered_at || o.payment_mode === "prepaid")))}</b><small>Due now</small></button>`;
+    $("#list").innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Bill</th><th>Date</th><th>Restaurant</th><th class="right">Amount</th><th>Order</th><th>Payment</th><th></th></tr></thead><tbody>
+      ${rows.map((o) => `<tr>
+        <td><b>${esc(billNo(o))}</b><div class="small muted">${billTitle(o)}${o.source === "backend" ? " · backend" : ""}</div></td>
+        <td>${fmtD(o.invoice_date || o.created_at)}<div class="small muted">Order #${o.order_no}</div></td>
+        <td>${esc(o.restaurant?.name || restMap[o.restaurant_id]?.name || "")}</td>
+        <td class="right"><b>${money(o.total)}</b></td>
+        <td>${statusBadge(o.status)}</td>
+        <td>${payBadge(o)}${o.payment_method ? `<div class="small muted">${esc(o.payment_method)}${o.payment_ref && o.payment_ref !== o.payment_method ? " · " + esc(o.payment_ref) : ""}</div>` : ""}</td>
+        <td class="right" style="white-space:nowrap"><button class="btn sm" data-bill="${o.id}">🧾 View / PDF</button>
+          ${team && o.payment_status !== "paid" ? paymentButtons(o) : ""} <button class="btn sm" data-view="${o.id}">Order</button></td></tr>`).join("")}
+      </tbody></table></div>` : '<div class="card empty">No bills in this range.</div>';
+    $$("[data-bill]", el).forEach((b) => (b.onclick = () => openBill(b.dataset.bill, { team: true })));
+    $$("[data-view]", el).forEach((b) => (b.onclick = () => orderModal(b.dataset.view, load)));
+    bindPaymentButtons($("#list"), rows, load);
+  };
+  $$("#fr,#fp,#ft,#ff,#fto", el).forEach((i) => (i.onchange = load));
+  $("#csv").onclick = () => downloadCSV(`bills-${$("#ff").value}-to-${$("#fto").value}.csv`, rows.map((o) => ({
+    bill_no: billNo(o), type: billTitle(o), order_no: o.order_no, date: (o.invoice_date || o.created_at).slice(0, 10),
+    restaurant: o.restaurant?.name || "", amount: o.total, order_status: o.status, payment_status: o.payment_status,
+    payment_method: o.payment_method || "", payment_ref: o.payment_ref || "", paid_at: o.paid_at || "",
+  })));
+  $("#nb").onclick = () => newBill(rests.filter((r) => r.active), load);
+  load();
+  if (location.hash.includes("new=1")) { history.replaceState(null, "", "#/billing"); newBill(rests.filter((r) => r.active), load); }
+}
+
+// create a bill from the backend: pick restaurant → items → delivered / paid?
+async function newBill(rests, done) {
+  let cat = [], cart = {};
+  const m = modal({
+    wide: true,
+    title: "New bill",
+    body: `
+      <div class="form-grid">
+        <div class="field"><label>1. Restaurant</label><select id="br"><option value="">— choose —</option>${rests.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("")}</select></div>
+        <div class="field"><label>Find item</label><input id="bs" placeholder="Search products…" disabled></div>
+      </div>
+      <label class="row small" style="font-weight:400;margin:-.3rem 0 .4rem"><input type="checkbox" id="bonly" checked> Only this restaurant's ordering list</label>
+      <div class="field"><label>2. Items — enter quantity (price is the restaurant's price; change it if needed)</label>
+        <div id="bcat" style="max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:8px"><div class="empty small">Choose a restaurant first.</div></div></div>
+      <div class="card" style="padding:.7rem;margin-top:.5rem"><div class="row between"><b>Bill total</b><b id="btot" style="font-size:1.3rem">₹0.00</b></div><div id="bsel" class="small muted"></div></div>
+      <div class="form-grid" style="margin-top:.6rem">
+        <div class="field"><label>3. Delivery date</label><input type="date" id="bdd" value="${todayIST()}"></div>
+        <div class="field"><label>Payment terms</label><select id="bmode"><option value="cod">Pay on delivery</option><option value="prepaid">Pre-pay</option></select></div>
+      </div>
+      <div class="field"><label>4. Status</label>
+        <label class="row" style="font-weight:400;margin:0"><input type="checkbox" id="bdel"> Goods already delivered <span class="small muted">(bill becomes an invoice straight away)</span></label>
+        <div class="row" style="margin-top:.4rem;gap:.5rem"><label style="font-weight:400;margin:0">Payment received?</label>
+          <select id="bpm" style="max-width:180px"><option value="">Not yet</option>${PAYMENT_METHODS.map((x) => `<option>${x}</option>`).join("")}</select>
+          <input id="bref" placeholder="UPI / bank / cheque reference" style="max-width:260px;display:none"></div></div>
+      <div class="field"><label>Note on the bill (optional)</label><input id="bnote" placeholder="e.g. Counter sale, urgent delivery"></div>
+      <p class="small muted">The restaurant gets the bill by email / WhatsApp. ${state.me.role === "coordinator" ? "The order is assigned to you." : "The order goes to the default coordinator."}</p>`,
+    footer: `<button class="btn" id="bcx">Cancel</button><button class="btn primary" id="bgo">Create bill</button>`,
+  });
+  const E = (s) => $(s, m.el);
+  const total = () => Object.values(cart).reduce((a, x) => a + x.qty * x.price, 0);
+  const paintTotal = () => {
+    E("#btot").textContent = money(total());
+    const n = Object.values(cart).filter((x) => x.qty > 0);
+    E("#bsel").textContent = n.length ? n.map((x) => `${x.name} × ${x.qty}`).join(", ") : "No items yet";
+  };
+  const paint = () => {
+    const term = E("#bs").value.trim().toLowerCase(), only = E("#bonly").checked;
+    const list = cat.filter((p) => (!only || p.on_list || cart[p.product_id]?.qty) && (!term || (p.product_name + " " + (p.display_name || "") + " " + p.category_name).toLowerCase().includes(term)));
+    E("#bcat").innerHTML = list.length ? `<table class="bill-lines"><thead><tr><th>Item</th><th>Unit</th><th class="right">Price ₹</th><th class="right">Qty</th><th class="right">Amount</th></tr></thead><tbody>
+      ${list.slice(0, 300).map((p) => { const c = cart[p.product_id]; return `<tr>
+        <td>${esc(p.product_name)}${p.display_name ? ` <span class="small muted">(${esc(p.display_name)})</span>` : ""}<div class="small muted">${esc(p.category_name)}${p.on_list ? "" : " · not on their list"}</div></td>
+        <td class="small">${esc(p.unit || "")}</td>
+        <td class="right"><input type="number" step="0.01" min="0" data-pr="${p.product_id}" value="${c?.price ?? Number(p.price || 0).toFixed(2)}"></td>
+        <td class="right"><input type="number" step="0.001" min="0" data-qt="${p.product_id}" value="${c?.qty || ""}" placeholder="0"></td>
+        <td class="right" data-am="${p.product_id}">${c?.qty ? money(c.qty * c.price) : ""}</td></tr>`; }).join("")}</tbody></table>`
+      : '<div class="empty small">No matching products.</div>';
+    const upd = (pid) => {
+      const p = cat.find((x) => x.product_id === pid);
+      const qty = Number(E(`[data-qt="${pid}"]`).value) || 0, price = Number(E(`[data-pr="${pid}"]`).value) || 0;
+      if (qty > 0) cart[pid] = { qty, price, name: p.product_name, custom: Math.abs(price - Number(p.price || 0)) > 0.004 }; else delete cart[pid];
+      E(`[data-am="${pid}"]`).textContent = qty > 0 ? money(qty * price) : "";
+      paintTotal();
+    };
+    $$("[data-qt],[data-pr]", m.el).forEach((i) => (i.oninput = () => upd(i.dataset.qt || i.dataset.pr)));
+  };
+  E("#br").onchange = async () => {
+    cart = {}; paintTotal();
+    if (!E("#br").value) { E("#bs").disabled = true; return; }
+    E("#bcat").innerHTML = '<div class="empty small">Loading…</div>';
+    cat = await q(sb.rpc("boh_bill_catalog", { p_rest: E("#br").value }));
+    E("#bs").disabled = false;
+    if (!cat.some((p) => p.on_list)) E("#bonly").checked = false;
+    paint();
+  };
+  E("#bs").oninput = paint; E("#bonly").onchange = paint;
+  E("#bpm").onchange = () => { E("#bref").style.display = E("#bpm").value && E("#bpm").value !== "Cash" ? "" : "none"; };
+  E("#bcx").onclick = () => m.close();
+  E("#bgo").onclick = async () => {
+    const rest = E("#br").value;
+    const items = Object.entries(cart).filter(([, x]) => x.qty > 0).map(([pid, x]) => ({ product_id: pid, qty: x.qty, ...(x.custom ? { price: x.price } : {}) }));
+    if (!rest) return toast("Choose the restaurant", true);
+    if (!items.length) return toast("Enter a quantity for at least one item", true);
+    const pm = E("#bpm").value, ref = E("#bref").value.trim();
+    if (pm && pm !== "Cash" && !ref) return toast("Enter the payment reference", true);
+    const zero = Object.values(cart).find((x) => x.qty > 0 && !(x.price > 0));
+    if (zero) return toast(`Enter a price for ${zero.name}`, true);
+    if (!(await confirmBox(`Create a bill of ${money(total())} for ${rests.find((r) => r.id === rest)?.name}?${E("#bdel").checked ? " Marked delivered." : ""}${pm ? " Payment received by " + pm + "." : ""} The restaurant will get it by email / WhatsApp.`))) return;
+    E("#bgo").disabled = true;
+    try {
+      const id = await q(sb.rpc("boh_staff_bill", { p_rest: rest, p_items: items, p_notes: E("#bnote").value.trim() || null, p_payment_mode: E("#bmode").value,
+        p_delivery: E("#bdd").value || null, p_delivered: E("#bdel").checked, p_paid_method: pm || null, p_paid_ref: ref || null }));
+      m.close(); toast("Bill created and sent to the restaurant"); refreshCounts(); done?.();
+      openBill(id, { team: true });
+    } catch { E("#bgo").disabled = false; }
+  };
+}
+
+// settings: company details on bills + default coordinator (rendered inside the Settings page)
+export async function billingSettings(el) {
+  const s = state.settings;
+  const team = await q(sb.from("boh_users").select("id,full_name,role,active").in("role", ["coordinator", "admin", "super_admin"]).eq("active", true).order("full_name"));
+  el.insertAdjacentHTML("beforeend", `
+    <div class="card" id="bsf" style="margin-top:1rem">
+      <h2 style="margin-top:0">Orders, bills & invoices</h2>
+      <div class="field"><label>Default coordinator — every new order is allocated to this person automatically</label>
+        <select name="default_coordinator_id"><option value="">Nobody — admins allocate by hand</option>${team.map((t) => `<option value="${t.id}" ${t.id === s.default_coordinator_id ? "selected" : ""}>${esc(t.full_name)} (${t.role.replace("_", " ")})</option>`).join("")}</select>
+        <div class="small muted">Bills a coordinator creates go to that coordinator. Admins can still reassign any order.</div></div>
+      <div class="form-grid">
+        <div class="field"><label>GSTIN on bills</label><input name="company_gstin" value="${esc(s.company_gstin || "")}" style="text-transform:uppercase"></div>
+        <div class="field"><label>Email on bills</label><input name="company_email" type="email" value="${esc(s.company_email || "")}" placeholder="orders@backofhouseco.in"></div>
+        <div class="field"><label>Invoice number prefix</label><input name="invoice_prefix" value="${esc(s.invoice_prefix || "BOH/")}"><div class="small muted">Next invoice e.g. ${esc(s.invoice_prefix || "BOH/")}1001</div></div>
+        <div class="field"><label>Portal address (used in email links)</label><input name="portal_url" value="${esc(s.portal_url || "https://ordering.backofhouseco.in")}"></div>
+      </div>
+      <div class="field"><label>Company address on bills</label><textarea name="company_address" rows="2">${esc(s.company_address || "")}</textarea></div>
+      <div class="field"><label>Terms printed at the bottom of every bill</label><textarea name="invoice_terms" rows="2">${esc(s.invoice_terms || "")}</textarea></div>
+      <button class="btn primary" id="bsave">Save bill settings</button>
+    </div>`);
+  $("#bsave", el).onclick = async () => {
+    const f = formData($("#bsf", el));
+    f.default_coordinator_id = f.default_coordinator_id || null;
+    if (f.company_gstin) f.company_gstin = f.company_gstin.toUpperCase();
+    f.invoice_prefix = f.invoice_prefix || "BOH/"; f.invoice_terms = f.invoice_terms || ""; f.portal_url = (f.portal_url || "https://ordering.backofhouseco.in").replace(/\/+$/, "");
+    const row = await q(sb.from("boh_settings").update(f).eq("id", 1).select().single());
+    state.settings = row; toast("Bill settings saved");
+  };
 }

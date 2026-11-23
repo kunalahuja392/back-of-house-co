@@ -1,10 +1,10 @@
-import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=20";
-import * as admin from "./admin.js?v=20";
-import * as reports from "./reports.js?v=20";
-import * as coord from "./coordinator.js?v=20";
-import * as cust from "./customer.js?v=20";
-import * as growth from "./growth.js?v=20";
-import * as vend from "./vendor.js?v=20";
+import { sb, state, $, $$, esc, toast, q, modal, callUsersFn } from "./lib.js?v=21";
+import * as admin from "./admin.js?v=21";
+import * as reports from "./reports.js?v=21";
+import * as coord from "./coordinator.js?v=21";
+import * as cust from "./customer.js?v=21";
+import * as growth from "./growth.js?v=21";
+import * as vend from "./vendor.js?v=21";
 
 const root = document.getElementById("root");
 
@@ -14,6 +14,7 @@ const MENUS = {
     ["dashboard", "📊", "Dashboard", admin.dashboard],
     ["orders", "🧾", "Orders & allocation", admin.orders],
     ["tasks", "✅", "My assigned orders", coord.tasks],
+    ["billing", "💵", "Billing & invoices", admin.billing],
     ["requests", "🙋", "Product requests", admin.requests],
     ["enquiries", "💬", "Enquiries", admin.enquiries],
     ["pricereports", "💡", "Cheaper vendors", admin.priceReports],
@@ -38,6 +39,7 @@ const MENUS = {
   ],
   coordinator: [
     ["tasks", "✅", "My orders", coord.tasks],
+    ["billing", "💵", "Billing & invoices", admin.billing],
     ["complaints", "⚠️", "Complaints", admin.complaints],
     ["vendors", "🚚", "Vendor contacts", coord.vendorContacts],
   ],
