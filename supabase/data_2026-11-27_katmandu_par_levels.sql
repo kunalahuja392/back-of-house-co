@@ -1,7 +1,7 @@
 -- 27 Nov 2026: Katmandu par-level sheet (KJM_Par_Level_Order_Sheet.pdf) → vendors + phones, new products,
 -- Katmandu display names, stock reorder level / fill-to (top-up) per product. One transaction.
 do $$
-declare r uuid := '350f7f60-514b-4926-a4ff-9d3f62ab3e72'; x record; vid uuid; cur record; n_new int := 0; n_moved int := 0; n_link int := 0;
+declare r uuid := '350f7f60-514b-4926-a4ff-9d3f62ab3e72'; x record; v_new uuid; cur record; n_new int := 0; n_moved int := 0; n_link int := 0;
 begin
   -- vendors: phones on the ones we have, new ones from the sheet
   update boh_vendors set phones = array['7875555544'] where name = 'Javed Fish & Mutton' and coalesce(array_length(phones,1),0) = 0;
@@ -268,8 +268,8 @@ begin
                        where rp.restaurant_id = r and rp.active and lower(p.name) = lower(s.name) order by (p.unit ilike 'kg') desc limit 1);
   update s set pid = (select p.id from boh_products p where p.active and lower(p.name) = lower(s.name) order by p.created_at limit 1) where pid is null;
   for x in select * from s where pid is null loop
-    insert into boh_products (category_id, name, unit, active) values ((select id from boh_categories where name = x.cat), x.name, x.unit, true) returning id into vid;
-    update s set pid = vid where pdf = x.pdf; n_new := n_new + 1;
+    insert into boh_products (category_id, name, unit, active) values ((select id from boh_categories where name = x.cat), x.name, x.unit, true) returning id into v_new;
+    update s set pid = v_new where pdf = x.pdf; n_new := n_new + 1;
   end loop;
   -- on Katmandu's list, with Katmandu's own name where it differs from ours
   insert into boh_restaurant_products (restaurant_id, product_id, active) select distinct r, pid, true from s
