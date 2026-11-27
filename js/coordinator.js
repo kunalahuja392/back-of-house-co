@@ -1,5 +1,5 @@
-import { sb, state, $, $$, esc, money, fmtDT, fmtD, q, statusBadge, payBadge, PAY_MODE, dueText, allocSteps, telLinks, DELIVERY_LABEL, orderAlloc, flowGuide, flowHTML, openBill } from "./lib.js?v=22";
-import { orderModal, advanceOrder, changeVendor, paymentButtons, bindPaymentButtons, paymentAction } from "./admin.js?v=22";
+import { sb, state, $, $$, esc, money, fmtDT, fmtD, q, statusBadge, payBadge, PAY_MODE, dueText, allocSteps, telLinks, DELIVERY_LABEL, orderAlloc, flowGuide, flowHTML, openBill } from "./lib.js?v=23";
+import { orderModal, advanceOrder, changeVendor, paymentButtons, bindPaymentButtons, paymentAction } from "./admin.js?v=23";
 
 // one card per order allocated to me: where it is, what to do now, whom to call
 export async function tasks(el) {
@@ -21,7 +21,7 @@ export async function tasks(el) {
       : mode === "pay" ? o.status !== "cancelled" && o.payment_status !== "paid" && (o.payment_status === "under_review" || o.payment_mode === "prepaid" || o.status === "delivered")
       : (o.status === "cancelled" || (o.payment_status === "paid" && ["delivered", "paid"].includes(o.status))) && Date.now() - new Date(o.created_at) < 30 * 86400000);
     const oids = orders.map((o) => o.id);
-    const items = oids.length ? await q(sb.from("boh_order_items").select("order_id, product_id, product_name, qty, unit, unit_price, unit_cost, vendor_id, vendor_name, delivery_style, vendor:boh_vendors(phones)").in("order_id", oids)) : [];
+    const items = oids.length ? await q(sb.from("boh_order_items").select("order_id, product_id, product_name, qty, unit, unit_price, unit_cost, price_pending, vendor_id, vendor_name, delivery_style, vendor:boh_vendors(phones)").in("order_id", oids)) : [];
     const dueOf = (o) => { const A = orderAlloc(o); const st = A ? allocSteps(o, A).find((x) => !x.at) : null; return st?.due || null; };
     // most urgent first: payments to verify, then by SLA due time
     orders.sort((x, y) => (y.payment_status === "under_review") - (x.payment_status === "under_review") || (dueOf(x)?.getTime() ?? 9e15) - (dueOf(y)?.getTime() ?? 9e15));
@@ -45,7 +45,7 @@ export async function tasks(el) {
           ${Object.values(vend).map((v) => `<div style="background:#faf8f4;border-radius:8px;padding:.5rem .7rem">
             <div class="row between"><b>🏪 ${esc(v.name || "No vendor")}</b> <span class="badge info">${esc(DELIVERY_LABEL[v.style] || "")}</span></div>
             <div class="small phones">📞 ${telLinks(v.phones)}</div>
-            <div class="small" style="margin-top:.3rem">${v.lines.map((l) => `${esc(l.product_name)} — <b>${Number(l.qty)} ${esc(l.unit || "")}</b>`).join("<br>")}</div>
+            <div class="small" style="margin-top:.3rem">${v.lines.map((l) => `${esc(l.product_name)} — <b>${Number(l.qty)} ${esc(l.unit || "")}</b>${l.price_pending ? ' <span class="badge warn">price to confirm</span>' : ""}`).join("<br>")}</div>
             ${working && v.id ? `<div style="margin-top:.4rem"><button class="btn sm" data-chv="${v.id}" data-oid="${o.id}">⇄ Not responding? Change vendor</button></div>` : ""}</div>`).join("")}
         </div>` : ""}
         ${o.payment_status === "under_review" ? `<div class="small">Restaurant says paid${o.payment_claim_method ? " via " + esc(o.payment_claim_method) : ""} · ref <b>${esc(o.payment_claim_ref)}</b> · ${fmtDT(o.payment_claimed_at)}</div>` : ""}
@@ -53,7 +53,7 @@ export async function tasks(el) {
         <div class="row" style="justify-content:flex-end;margin-top:.4rem">
           <button class="btn" data-bill="${o.id}">🧾 Bill</button>
           <button class="btn" data-open="${o.id}">Open order</button>
-          ${g.done ? "" : g.action?.pay ? paymentButtons(o) : g.action?.step ? `${g.alt ? `<button class="btn" data-adv="${o.id}" data-step="${g.alt.step}">${g.alt.label}</button>` : ""}<button class="btn primary" data-adv="${o.id}" data-step="${g.action.step}">${g.action.label}</button>`
+          ${g.done ? "" : g.action?.price ? `<button class="btn primary" data-open="${o.id}">Set prices</button>` : g.action?.pay ? paymentButtons(o) : g.action?.step ? `${g.alt ? `<button class="btn" data-adv="${o.id}" data-step="${g.alt.step}">${g.alt.label}</button>` : ""}<button class="btn primary" data-adv="${o.id}" data-step="${g.action.step}">${g.action.label}</button>`
             : o.payment_status !== "paid" && o.payment_mode === "prepaid" ? paymentButtons(o) : ""}
         </div></div>`;
     }).join("") || `<div class="card empty">${mode === "open" ? "Nothing waiting on you 🎉" : mode === "pay" ? "No payments to collect or verify." : "Nothing completed recently."}</div>`;

@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=22";
+import { SUPABASE_URL, SUPABASE_KEY, USERS_FUNCTION } from "./config.js?v=23";
 
 export const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -302,6 +302,7 @@ export function flowGuide(o, A = orderAlloc(o)) {
   if (s === "followup1") return { idx: 3, title: "2nd follow-up", help: "Confirm the delivery time with the vendors and note it. Mark delivered as soon as the restaurant receives everything.", action: { step: "followup2", label: "Log 2nd follow-up" }, alt: { step: "delivered", label: "Mark delivered" } };
   if (s === "followup2") return { idx: 4, title: "Mark delivered", help: "Once the restaurant has received all items, mark the order delivered and enter any porter / delivery charges you paid.", action: { step: "delivered", label: "Mark delivered" } };
   // delivered, not paid
+  if (o.price_pending) return { idx: 5, title: "Confirm the open prices", help: "Some items were ordered at 'price on request'. Open the order, tap Set price on each and enter the vendor's rate — the restaurant then gets the final bill, and you can collect payment.", action: { price: true, label: "Set prices" } };
   if (o.payment_status === "under_review") return { idx: 5, title: "Verify the payment", help: `The restaurant says it paid (ref ${o.payment_claim_ref || "—"}). Check your bank / UPI app, then approve or reject.`, action: { pay: "approve", label: "Approve payment" } };
   return { idx: 5, title: "Collect the payment", help: "Collect the amount from the restaurant (cash, UPI, bank transfer or cheque) and record it here. The restaurant gets a payment receipt by email automatically.", action: { pay: "collect", label: "Collect payment" } };
 }
@@ -311,7 +312,8 @@ export function flowHTML(o, A = orderAlloc(o), { compact = false } = {}) {
   const g = flowGuide(o, A);
   const bar = `<div class="flow">${FLOW.map((f, i) => `<div class="flow-step ${i < g.idx ? "done" : i === g.idx ? "now" : ""}"><span>${i < g.idx ? "✓" : i + 1}</span><em>${esc(f)}</em></div>`).join("")}</div>`;
   if (compact) return bar;
-  return `${bar}<div class="flow-next ${g.done ? "done" : ""}"><b>${g.done ? "✓ " : "Next: "}${esc(g.title)}</b><div class="small">${esc(g.help)}</div></div>`;
+  const pn = o.price_pending && !g.action?.price ? `<div class="flow-next" style="background:#fef3c7;border-color:#fcd34d"><b>⚠ Prices to confirm</b><div class="small">This order has price-on-request items. Before delivery, tap <b>Set price</b> on each of them (in the vendor list) with the vendor's rate.</div></div>` : "";
+  return `${bar}${pn}<div class="flow-next ${g.done ? "done" : ""}"><b>${g.done ? "✓ " : "Next: "}${esc(g.title)}</b><div class="small">${esc(g.help)}</div></div>`;
 }
 
 // ====================================================================== bills / invoices
@@ -384,14 +386,15 @@ export function invoiceHTML(d, names = {}) {
         <td style="padding:6px;border-bottom:1px solid #eee8de"><b style="font-weight:600">${esc(names[l.product_id] || l.product_name)}</b>${l.category_name ? `<div style="color:#8a847a;font-size:10.5px">${esc(l.category_name)}</div>` : ""}</td>
         <td style="padding:6px;border-bottom:1px solid #eee8de;text-align:right">${q3(l.qty)}</td>
         <td style="padding:6px;border-bottom:1px solid #eee8de">${esc(l.unit || "")}</td>
-        <td style="padding:6px;border-bottom:1px solid #eee8de;text-align:right">${m(l.unit_price)}</td>
-        <td style="padding:6px;border-bottom:1px solid #eee8de;text-align:right;font-weight:600">${m(l.line_total)}</td></tr>`).join("")}</tbody></table>
+        <td style="padding:6px;border-bottom:1px solid #eee8de;text-align:right">${l.unit_price == null ? '<span style="color:#b26a00">On request</span>' : m(l.unit_price)}</td>
+        <td style="padding:6px;border-bottom:1px solid #eee8de;text-align:right;font-weight:600">${l.line_total == null ? '<span style="color:#b26a00;font-weight:400">To be confirmed</span>' : m(l.line_total)}</td></tr>`).join("")}</tbody></table>
+    ${lines.some((l) => l.unit_price == null) ? `<div style="margin-top:8px;padding:8px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:11.5px">Items marked <b>To be confirmed</b> are price-on-request. Their price will be added before delivery; the total below covers priced items only.</div>` : ""}
     <table style="width:100%;border-collapse:collapse;margin-top:10px;page-break-inside:avoid"><tr>
       <td style="vertical-align:top;padding-right:16px;color:#4a463f;font-size:11.5px"><b>Amount in words</b><br>${rupeesInWords(o.total)}</td>
       <td style="vertical-align:top;width:250px"><table style="width:100%;border-collapse:collapse;font-size:12.5px">
         <tr><td style="padding:3px 6px;color:#6b665e">Items</td><td style="padding:3px 6px;text-align:right">${lines.length}</td></tr>
         <tr><td style="padding:3px 6px;color:#6b665e">Subtotal</td><td style="padding:3px 6px;text-align:right">${m(sub)}</td></tr>
-        <tr style="background:#1f3a2e;color:#fff;font-size:14px"><td style="padding:7px 6px;font-weight:700">Total</td><td style="padding:7px 6px;text-align:right;font-weight:800">${m(o.total)}</td></tr>
+        <tr style="background:#1f3a2e;color:#fff;font-size:14px"><td style="padding:7px 6px;font-weight:700">Total${lines.some((l) => l.unit_price == null) ? " (priced items)" : ""}</td><td style="padding:7px 6px;text-align:right;font-weight:800">${m(o.total)}</td></tr>
         ${paid ? `<tr><td style="padding:4px 6px;color:#1b7f3b">Paid</td><td style="padding:4px 6px;text-align:right;color:#1b7f3b">− ${m(o.total)}</td></tr><tr><td style="padding:3px 6px;font-weight:700">Balance</td><td style="padding:3px 6px;text-align:right;font-weight:700">${m(0)}</td></tr>` : ""}
       </table></td></tr></table>
     ${!paid && o.status !== "cancelled" && (c.upi || bank || c.qr) ? `<div style="margin-top:14px;border:1px solid #e6e0d6;border-radius:8px;padding:10px 12px;display:flex;gap:14px;align-items:center;page-break-inside:avoid">

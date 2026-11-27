@@ -158,3 +158,58 @@ begin
 end $$;
 drop trigger if exists boh_tr_block_pending on public.boh_orders;
 create trigger boh_tr_block_pending before update of payment_status on public.boh_orders for each row execute function public.boh_tr_block_pending();
+
+-- the "delivered — amount due" message waits while prices are open (the final bill goes out when the last price is set)
+create or replace function public.boh_tr_order_update() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare r boh_restaurants; s boh_settings; by_u text; pay text;
+begin
+  if coalesce(current_setting('boh.quiet', true), '') = '1' then return new; end if;
+  select * into r from boh_restaurants where id = new.restaurant_id;
+  select * into s from boh_settings where id = 1;
+  if new.status = 'delivered' and old.status is distinct from 'delivered' and new.payment_status <> 'paid' and not new.price_pending then
+    pay := boh_pay_text();
+    perform boh_notify_restaurant(new.restaurant_id, 'delivered_due', 'Invoice ' || coalesce(new.invoice_no, '#' || new.order_no) || ' — ' || boh_inr(new.total) || ' due',
+      '🧾 *Order #' || new.order_no || ' delivered* — invoice ' || coalesce(new.invoice_no, '') ||
+      E'\nAmount due: *' || boh_inr(new.total) || '*' ||
+      E'\nPlease pay within ' || s.sla_payment_hrs || ' working hours (by ' || boh_ist(boh_add_working_hours(new.delivered_at, s.sla_payment_hrs)) || ')' ||
+      coalesce(E'\n' || pay, '') ||
+      E'\nYour coordinator can also collect the payment.\nDownload the invoice: ' || s.portal_url || '/#/orders' || E'\n— ' || s.company_name, new.id, 'deldue:' || new.id);
+  end if;
+  if new.payment_status is distinct from old.payment_status then
+    if new.payment_status = 'under_review' then
+      perform boh_notify_coordinators(new.id, 'payment_claim', 'Verify payment — order #' || new.order_no,
+        '💳 *Payment to verify* — order #' || new.order_no || ' · ' || r.name || E'\nAmount: ' || boh_inr(new.total) ||
+        E'\nPaid via: ' || coalesce(new.payment_claim_method, '—') || ' · Ref: ' || coalesce(new.payment_claim_ref, '—') ||
+        E'\nApprove or reject in the app.', 'claim:' || new.id || ':' || coalesce(new.payment_claim_ref, ''));
+      perform boh_notify_admins(new.restaurant_id, 'payment_claim', 'Verify payment — order #' || new.order_no,
+        '💳 *Payment to verify* — order #' || new.order_no || ' · ' || r.name || E'\nAmount: ' || boh_inr(new.total) ||
+        E'\nPaid via: ' || coalesce(new.payment_claim_method, '—') || ' · Ref: ' || coalesce(new.payment_claim_ref, '—') ||
+        E'\nApprove or reject in the app.', new.id, 'claim:' || new.id || ':' || coalesce(new.payment_claim_ref, ''));
+    elsif new.payment_status = 'paid' then
+      select full_name into by_u from boh_users where id = new.payment_confirmed_by;
+      perform boh_notify_restaurant(new.restaurant_id, 'paid', 'Payment received — ' || boh_inr(new.total) || ' · order #' || new.order_no,
+        '✅ *Payment received — thank you!*' ||
+        E'\nOrder #' || new.order_no || coalesce(' · Invoice ' || new.invoice_no, '') ||
+        E'\nAmount: *' || boh_inr(new.total) || '*' ||
+        coalesce(E'\nMethod: ' || coalesce(new.payment_method, new.payment_claim_method), '') ||
+        coalesce(E'\nReference: ' || nullif(new.payment_ref, ''), '') ||
+        E'\nDate: ' || boh_ist(coalesce(new.paid_at, now())) ||
+        E'\n\nDownload the paid invoice: ' || s.portal_url || '/#/orders' || E'\n— ' || s.company_name,
+        new.id, 'paid:' || new.id);
+      perform boh_notify_admins(new.restaurant_id, 'paid', 'Payment received — order #' || new.order_no || ' · ' || r.name,
+        '💰 *Payment received* — order #' || new.order_no || ' · ' || r.name || E'\nAmount: ' || boh_inr(new.total) ||
+        coalesce(E'\nMethod: ' || coalesce(new.payment_method, new.payment_claim_method), '') || coalesce(' · ref ' || nullif(new.payment_ref, ''), '') ||
+        coalesce(E'\nMarked by ' || by_u, ''), new.id, 'paid-admin:' || new.id);
+    elsif new.payment_status = 'unpaid' and old.payment_status = 'under_review' and new.payment_rejected_note is not null then
+      perform boh_notify_restaurant(new.restaurant_id, 'payment_rejected', 'Payment not approved — order #' || new.order_no,
+        '❌ *Payment for order #' || new.order_no || ' was not approved.*' || E'\nReason: ' || new.payment_rejected_note ||
+        E'\nAmount due: ' || boh_inr(new.total) || E'\nPlease check and pay again from the app (My orders → Pay now).\n— ' || s.company_name,
+        new.id, 'reject:' || new.id || ':' || extract(epoch from new.payment_rejected_at)::bigint);
+    end if;
+  end if;
+  return new;
+end $$;
+
+-- invoice numbers used by test runs are not kept
+select setval('boh_invoice_seq', greatest(1003, coalesce((select max(nullif(regexp_replace(invoice_no, '\D', '', 'g'), '')::bigint) from boh_orders where invoice_no is not null), 1003)));

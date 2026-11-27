@@ -1,4 +1,4 @@
-import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, promptBox, q, statusBadge, telLinks, payBadge, PAY_MODE, todayIST, tabs, openBill, billNo } from "./lib.js?v=22";
+import { sb, state, $, $$, esc, money, num, fmtDT, fmtD, toast, modal, confirmBox, promptBox, q, statusBadge, telLinks, payBadge, PAY_MODE, todayIST, tabs, openBill, billNo } from "./lib.js?v=23";
 
 const CART_KEY = () => "boh_cart_" + state.me.restaurant_id;
 const loadCart = () => { try { return JSON.parse(localStorage.getItem(CART_KEY()) || "{}"); } catch { return {}; } };
@@ -228,8 +228,8 @@ export async function placeOrder(el) {
           ${DI.moq[p.product_id] ? `<span class="badge info" title="Minimum order quantity">Min ${num(DI.moq[p.product_id], 3)} ${esc(p.unit)}</span>` : ""}
           ${late(p) ? `<span class="badge warn" title="Day off for this category">🗓 ${dayLabel(late(p).delivery_date)}</span>` : ""}
           <button class="linkbtn small" type="button" data-cheap title="Tell us if you found a lower price">💡 Found it cheaper?</button></div>
-        <div class="pr">${p.price == null ? '<span class="small muted">Price on request</span>' : money(p.price) + ` <span class="small muted">/${esc(p.unit)}</span>`}</div>
-        <div class="qty"><button class="btn sm" data-dec>−</button><input type="number" min="0" step="any" data-q value="${cart[p.product_id] || ""}" ${p.price == null ? "disabled" : ""}><button class="btn sm" data-inc>+</button></div>
+        <div class="pr">${p.price == null ? `<span class="small" style="color:var(--warn)" title="You can order it — our team confirms the price before delivery">Price on request</span> <span class="small muted">/${esc(p.unit)}</span>` : money(p.price) + ` <span class="small muted">/${esc(p.unit)}</span>`}</div>
+        <div class="qty"><button class="btn sm" data-dec>−</button><input type="number" min="0" step="any" data-q value="${cart[p.product_id] || ""}"><button class="btn sm" data-inc>+</button></div>
         <div class="amt" data-amt></div></div>`).join("")}
     </div>
     <div class="cart-bar"><div><b id="cnt">0</b> items · <b id="tot">₹0</b> <span class="small" style="opacity:.7">(prices excl. taxes if applicable)</span></div>
@@ -244,10 +244,11 @@ export async function placeOrder(el) {
       const v = Number($("[data-q]", tr).value) || 0;
       const p = byId[tr.dataset.id];
       if (v > 0) { cart[tr.dataset.id] = v; cnt++; tot += v * Number(p.price || 0); } else delete cart[tr.dataset.id];
-      $("[data-amt]", tr).textContent = v > 0 ? money(v * Number(p.price || 0)) : "";
+      $("[data-amt]", tr).textContent = v > 0 ? (p.price == null ? "Price to confirm" : money(v * Number(p.price))) : "";
       tr.classList.toggle("has", v > 0);
     });
-    $("#cnt").textContent = cnt; $("#tot").textContent = money(tot);
+    const pend = Object.keys(cart).filter((id) => byId[id]?.price == null).length;
+    $("#cnt").textContent = cnt; $("#tot").textContent = money(tot) + (pend ? ` + ${pend} item${pend > 1 ? "s" : ""} at price to confirm` : "");
     saveCart(cart);
   };
   const filter = () => {
@@ -283,14 +284,16 @@ export async function placeOrder(el) {
     const under = items.filter((i) => DI.moq[i.product_id] && i.qty < DI.moq[i.product_id]);
     if (under.length) return toast(`Minimum order: ${under.map((i) => `${i.p.product_name} ${num(DI.moq[i.product_id], 3)} ${i.p.unit}`).join(", ")}`, true);
     const dates = [...new Set(items.map((i) => (DI.byCat[i.p.category_id]?.delivery_date) || DI.base))].sort();
-    const total = items.reduce((a, i) => a + i.qty * Number(i.p.price), 0);
+    const total = items.reduce((a, i) => a + i.qty * Number(i.p.price || 0), 0);
+    const pend = items.filter((i) => i.p.price == null);
     const m = modal({
       title: "Review your order",
       body: `<div class="notice ${cutoffInfo().open ? "green" : ""}">${cutoffInfo().html}</div>
         ${dates.length > 1 ? `<div class="notice">🗓️ This will be placed as <b>${dates.length} orders</b> because of category days off: ${dates.map((d) => `<b>${dayLabel(d)}</b> — ${esc([...new Set(items.filter((i) => ((DI.byCat[i.p.category_id]?.delivery_date) || DI.base) === d).map((i) => i.p.category_name))].join(", "))}`).join(" · ")}</div>` : ""}
         <table><thead><tr><th>Product</th><th class="right">Qty</th><th class="right">Price</th><th class="right">Amount</th></tr></thead><tbody>
-        ${items.map((i) => `<tr><td>${esc(i.p.product_name)}</td><td class="right">${num(i.qty, 3)} ${esc(i.p.unit)}</td><td class="right">${money(i.p.price)}</td><td class="right">${money(i.qty * i.p.price)}</td></tr>`).join("")}
-        <tr><td colspan="3"><b>Total</b></td><td class="right"><b>${money(total)}</b></td></tr></tbody></table>
+        ${items.map((i) => `<tr><td>${esc(i.p.product_name)}</td><td class="right">${num(i.qty, 3)} ${esc(i.p.unit)}</td><td class="right">${i.p.price == null ? "Price on request" : money(i.p.price)}</td><td class="right">${i.p.price == null ? '<span class="small" style="color:var(--warn)">To be confirmed</span>' : money(i.qty * i.p.price)}</td></tr>`).join("")}
+        <tr><td colspan="3"><b>Total${pend.length ? " (priced items)" : ""}</b></td><td class="right"><b>${money(total)}</b></td></tr></tbody></table>
+        ${pend.length ? `<div class="notice">${pend.length} item${pend.length > 1 ? "s are" : " is"} <b>price on request</b> (${esc(pend.map((i) => i.p.product_name).join(", "))}). Our team confirms the price and sends you the final bill before delivery.</div>` : ""}
         <div class="field" style="margin-top:1rem"><label>How will you pay? *</label>
           <div class="row">
             <label class="paymode"><input type="radio" name="pm" value="cod" checked> <span><b>Pay on delivery</b><br><span class="small muted">Pay when the goods arrive</span></span></label>
@@ -428,8 +431,9 @@ export async function myOrders(el) {
         <div class="steps" style="margin-bottom:1rem">${CUST_STEPS.map(([k, l]) => `<div class="step ${o[k] ? "done" : ""}"><span class="dot"></span><div>${l}</div><div class="small muted">${o[k] ? fmtDT(o[k]) : ""}</div></div>`).join("")}</div>
         ${coords.length ? `<div class="card" style="padding:.7rem;margin-bottom:1rem"><b>Your coordinator</b>${coords.map((c) => `<div class="small">${esc(c.full_name)} 📞 ${telLinks([c.phone])}</div>`).join("")}</div>` : ""}
         <table><thead><tr><th>Product</th><th class="right">Qty</th><th class="right">Price</th><th class="right">Amount</th></tr></thead><tbody>
-        ${lines.map((l) => `<tr><td>${esc(l.product_name)}</td><td class="right">${num(l.qty, 3)} ${esc(l.unit)}</td><td class="right">${money(l.unit_price)}</td><td class="right">${money(l.line_total)}</td></tr>`).join("")}
-        <tr><td colspan="3"><b>Total</b></td><td class="right"><b>${money(o.total)}</b></td></tr></tbody></table>
+        ${lines.map((l) => `<tr><td>${esc(l.product_name)}</td><td class="right">${num(l.qty, 3)} ${esc(l.unit)}</td><td class="right">${l.unit_price == null ? "Price on request" : money(l.unit_price)}</td><td class="right">${l.line_total == null ? '<span class="small" style="color:var(--warn)">To be confirmed</span>' : money(l.line_total)}</td></tr>`).join("")}
+        <tr><td colspan="3"><b>Total${o.price_pending ? " (priced items)" : ""}</b></td><td class="right"><b>${money(o.total)}</b></td></tr></tbody></table>
+        ${o.price_pending ? '<div class="notice">Some items are price on request — our team will confirm their price and send you the final bill.</div>' : ""}
         ${o.notes ? `<p class="small muted">Your note: ${esc(o.notes)}</p>` : ""}`,
       footer: `<button class="btn" id="cmp">Raise a complaint</button><span class="grow"></span>${o.status !== "cancelled" ? `<button class="btn" id="mbill">🧾 ${o.invoice_no ? "Invoice" : "Proforma bill"} (PDF)</button>` : ""}${o.status !== "cancelled" && o.payment_status === "unpaid" ? '<button class="btn accent" id="paynow">Pay now</button>' : ""}`,
     });

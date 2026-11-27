@@ -3,8 +3,8 @@ import {
   uploadImage, tabs, statusBadge, dueBadge, dueText, stepsHTML, allocSteps, orderSteps, telLinks, DELIVERY_LABEL, NEXT_STEP, STEP_BUTTON,
   OVERHEAD_KINDS, payBadge, PAY_MODE, todayIST, daysAgoIST, downloadCSV, promptBox, orderAlloc, canDeliver,
   flowGuide, flowHTML, openBill, billNo, billTitle, PAYMENT_METHODS,
-} from "./lib.js?v=22";
-import { DAYS, reviewVendor, vendorLogins, listingEditor } from "./growth.js?v=22";
+} from "./lib.js?v=23";
+import { DAYS, reviewVendor, vendorLogins, listingEditor } from "./growth.js?v=23";
 
 const isSuper = () => state.me.role === "super_admin";
 const isStaff = () => ["admin", "super_admin"].includes(state.me.role);
@@ -204,6 +204,7 @@ export function collectPayment(o) {
 }
 export function paymentButtons(o) {
   if (o.status === "cancelled" || o.payment_status === "paid") return "";
+  if (o.price_pending) return '<span class="badge warn" title="Set the price of the price-on-request items first">Prices to confirm first</span>';
   if (o.payment_status === "under_review")
     return `<button class="btn sm danger" data-payact="reject" data-oid="${o.id}">Reject</button> <button class="btn sm primary" data-payact="approve" data-oid="${o.id}">Approve payment</button>`;
   return `<button class="btn sm ${o.status === "delivered" ? "primary" : ""}" data-payact="collect" data-oid="${o.id}">💰 Collect payment</button>`;
@@ -349,7 +350,8 @@ export async function orderModal(orderId, reload) {
       <table style="margin-top:.4rem"><thead><tr><th>Item</th><th>Category</th><th class="right">Qty</th>${staff ? '<th class="right">Cost</th><th class="right">Margin</th>' : ""}<th class="right">Price</th><th class="right">Total</th></tr></thead><tbody>
       ${g.lines.map((i) => `<tr><td>${esc(i.product_name)}</td><td class="small muted">${esc(i.category_name || "")}</td><td class="right">${num(i.qty, 3)} ${esc(i.unit || "")}</td>
         ${staff ? `<td class="right">${money(i.unit_cost)}</td><td class="right">${pct(i.margin_pct)}</td>` : ""}
-        <td class="right">${money(i.unit_price)}</td><td class="right">${money(i.line_total)}</td></tr>`).join("")}</tbody></table></div>`;
+        <td class="right">${i.price_pending ? `<span class="badge warn">On request</span>${can || ((staff || onOrder) && o.status === "delivered") ? ` <button class="btn sm primary" data-setprice="${i.id}">Set price</button>` : ""}` : money(i.unit_price)}</td>
+        <td class="right">${i.price_pending ? '<span class="small muted">—</span>' : money(i.line_total)}</td></tr>`).join("")}</tbody></table></div>`;
 
   const m = modal({
     wide: true,
@@ -361,6 +363,7 @@ export async function orderModal(orderId, reload) {
       ${(() => { const g = flowGuide(o, A); if (g.done || !(staff || onOrder)) return "";
         if (g.action?.alloc) return staff ? '<div class="row" style="justify-content:flex-end;margin:-.2rem 0 .8rem"><button class="btn primary" id="galloc">Allocate now</button></div>' : "";
         if (g.action?.pay) return `<div class="row" style="justify-content:flex-end;margin:-.2rem 0 .8rem">${paymentButtons(o)}</div>`;
+        if (g.action?.price) return '<div class="small muted" style="text-align:right;margin:-.2rem 0 .8rem">Use <b>Set price</b> next to each “On request” item below.</div>';
         return `<div class="row" style="justify-content:flex-end;margin:-.2rem 0 .8rem">${g.alt ? `<button class="btn" data-oadv="${g.alt.step}">${g.alt.label}</button>` : ""}<button class="btn primary" data-oadv="${g.action.step}">${g.action.label}</button></div>`; })()}
       ${o.notes ? `<div class="notice">Restaurant note: ${esc(o.notes)}</div>` : ""}
       <div class="grid c2" style="align-items:start">
@@ -403,6 +406,7 @@ export async function orderModal(orderId, reload) {
   const reopen = () => { m.close(); reload?.(); orderModal(orderId, reload); };
   $$("[data-oadv]", m.el).forEach((b) => (b.onclick = () => advanceOrder(o, b.dataset.oadv, reopen)));
   $$("[data-chv]", m.el).forEach((b) => (b.onclick = () => changeVendor(o, b.dataset.chv, byVendor[b.dataset.chv].lines, reopen)));
+  $$("[data-setprice]", m.el).forEach((b) => (b.onclick = () => setLinePrice(o, items.find((x) => x.id === b.dataset.setprice), reopen)));
   $("#addoh", m.el)?.addEventListener("click", async () => {
     const list = await overheadForm(`Add overhead — order #${o.order_no}`, false);
     if (!list) return;
@@ -1829,5 +1833,32 @@ export async function billingSettings(el) {
     f.invoice_prefix = f.invoice_prefix || "BOH/"; f.invoice_terms = f.invoice_terms || ""; f.portal_url = (f.portal_url || "https://ordering.backofhouseco.in").replace(/\/+$/, "");
     const row = await q(sb.from("boh_settings").update(f).eq("id", 1).select().single());
     state.settings = row; toast("Bill settings saved");
+  };
+}
+
+// price-on-request line: enter the vendor's rate; the restaurant's price = rate + its mark-up unless typed
+export async function setLinePrice(o, line, done) {
+  const vendors = await q(sb.from("boh_vendors").select("id,name,phones").eq("active", true).order("name"));
+  const m = modal({
+    title: `Set price — ${line.product_name}`,
+    body: `<p class="muted">Order #${o.order_no} · ${num(line.qty, 3)} ${esc(line.unit || "")} · ordered at “price on request”.</p>
+      <div class="field"><label>Vendor</label><select id="sv">${vendors.map((v) => `<option value="${v.id}" ${v.id === line.vendor_id ? "selected" : ""}>${esc(v.name)}${v.phones?.length ? " · " + esc(v.phones[0]) : ""}</option>`).join("")}</select></div>
+      <div class="form-grid">
+        <div class="field"><label>Vendor's rate per ${esc(line.unit || "unit")} (₹) *</label><input type="number" step="0.01" min="0" id="sc" placeholder="what we pay"></div>
+        <div class="field"><label>Restaurant's price per ${esc(line.unit || "unit")} (₹)</label><input type="number" step="0.01" min="0" id="sp" placeholder="blank = rate + their mark-up"></div>
+      </div>
+      <label class="row small" style="font-weight:400"><input type="checkbox" id="ss" checked> Save this as the vendor's rate, so the item has a normal price from now on</label>
+      <p class="small muted">When every item on the order has a price, the restaurant gets the final bill by email / WhatsApp.</p>`,
+    footer: `<button class="btn" id="cx">Cancel</button><button class="btn primary" id="ok">Save price</button>`,
+  });
+  $("#cx", m.el).onclick = () => m.close();
+  $("#ok", m.el).onclick = async () => {
+    const cost = Number($("#sc", m.el).value), price = $("#sp", m.el).value === "" ? null : Number($("#sp", m.el).value);
+    if (!(cost > 0)) return toast("Enter the vendor's rate", true);
+    if (price != null && price < cost && !(await confirmBox(`The restaurant price (${money(price)}) is below the vendor rate (${money(cost)}). Save anyway?`))) return;
+    const r = await q(sb.rpc("boh_set_line_price", { p_item: line.id, p_cost: cost, p_price: price, p_vendor: $("#sv", m.el).value, p_save_rate: $("#ss", m.el).checked }));
+    m.close();
+    toast(r.left ? `Price saved (${money(r.price)}). ${r.left} more item${r.left > 1 ? "s" : ""} to price.` : `Price saved (${money(r.price)}). Final bill sent to the restaurant.`);
+    refreshCounts(); done?.();
   };
 }
